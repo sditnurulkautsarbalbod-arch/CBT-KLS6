@@ -3583,8 +3583,8 @@
                         status: status,
                         nilai: point,
                         mataPelajaran: examDetails.mataPelajaran,
-                        semester: examDetails.semester,
-                        tahunAjaran: examDetails.tahunAjaran,
+                        semester: examDetails.semester || AppState.lastQuestionData.semester || 'Tidak diketahui',
+                        tahunAjaran: examDetails.tahunAjaran || AppState.lastQuestionData.tahunAjaran || 'Tidak diketahui',
                         timestamp: submissionTimestamp
                     });
                 }
