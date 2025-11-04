@@ -3397,7 +3397,9 @@
                         correct: (q.correct !== "" && q.correct !== null) ? Number(q.correct) : null,
                         correctAnswer: q.jawabanBenar || null,
                         gambar: q.gambar || null,
-                         mataPelajaran: q.mataPelajaran || null
+                        mataPelajaran: q.mataPelajaran || null,
+						tahunAjaran: q.tahunAjaran,
+						semester: q.semester
                     }));
                     
                     AppState.selectedExamCode = examCode;
