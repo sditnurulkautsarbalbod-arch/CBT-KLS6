@@ -3592,10 +3592,26 @@
                 }
                 
                 try {
+                    // This is where the fix for date-like answers is implemented.
+                    const preparedResults = resultsForSheet.map((result, index) => {
+                        const question = AppState.questions[index];
+                        // Hanya berlaku untuk soal isian atau uraian
+                        if (question && (question.type === 'isian' || question.type === 'uraian')) {
+                            const answer = String(result.jawabanSiswa);
+                            
+                            // Regex untuk mendeteksi format seperti tanggal (misal: 1/2, 1-2, 1/2/2024) atau angka murni
+                            if (/^\d{1,4}[-\/]\d{1,2}(?:[-\/]\d{1,4})?$/.test(answer.trim()) || /^\d+$/.test(answer.trim())) {
+                                // Jika cocok, tambahkan tanda kutip di depannya
+                                return { ...result, jawabanSiswa: "'" + answer };
+                            }
+                        }
+                        return result;
+                    });
+                    
                     // Send all results to Google Sheet in one go
                     await callGoogleScript('POST', {
                         action: 'addResults',
-                        data: resultsForSheet
+                        data: preparedResults
                     });
 
                     // Save final grade summary to Firebase
