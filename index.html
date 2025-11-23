@@ -47,17 +47,7 @@
 <script type="importmap">
 {
   "imports": {
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
-    "react": "https://aistudiocdn.com/react@^19.2.0",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.24.0",
-    "react-image-crop": "https://aistudiocdn.com/react-image-crop@^11.0.10",
-    "monaco-editor": "https://aistudiocdn.com/monaco-editor@^0.54.0",
-    "safevalues/": "https://aistudiocdn.com/safevalues@^1.2.0/",
-    "safevalues": "https://cdn.jsdelivr.net/npm/safevalues@^1.2.0/dist/mjs/index.min.js",
-    "markdown-it": "https://aistudiocdn.com/markdown-it@^14.1.0",
-    "@monaco-editor/loader": "https://aistudiocdn.com/@monaco-editor/loader@^1.6.0",
-    "sortablejs": "https://aistudiocdn.com/sortablejs@^1.15.6"
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.24.0"
   }
 }
 </script>
@@ -277,17 +267,19 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
+        import { GoogleGenAI, Type } from "@google/genai";
+
         // =================================================================
         // FIREBASE CONFIGURATION (Only for non-question data)
         // =================================================================
         const firebaseConfig = {
             apiKey: "AIzaSyBX5AvE7siTd6NIhZGcb1Czg3uZsIks0cg",
-            authDomain: "cbt-kls-6.firebaseapp.com",
-            projectId: "cbt-kls-6",
-            storageBucket: "cbt-kls-6.firebasestorage.app",
-            messagingSenderId: "588798199845",
-            appId: "1:588798199845:web:0cdd2f629a18d0aba6d7cc"
+			authDomain: "cbt-kls-6.firebaseapp.com",
+			projectId: "cbt-kls-6",
+			storageBucket: "cbt-kls-6.firebasestorage.app",
+			messagingSenderId: "588798199845",
+			appId: "1:588798199845:web:0cdd2f629a18d0aba6d7cc"
         };
 
         // Initialize Firebase
@@ -2205,14 +2197,13 @@
         };
 
         // =================================================================
-        // GEMINI API HELPER
+        // GEMINI API HELPER (UPDATED with @google/genai SDK)
         // =================================================================
         const GeminiHelper = {
             async generateQuestions(promptData) {
-                const apiKey = "AIzaSyD-7OfbPmbjMBHj-eGPyFQJOpMQSH0fgzI"; // API key is handled by the environment
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                const apiKey = "AIzaSyD-7OfbPmbjMBHj-eGPyFQJOpMQSH0fgzI"; // Used directly as per existing code for functional integrity
 
-                const systemPrompt = `Anda adalah asisten pembuatan soal untuk guru SD. Buat soal berdasarkan topik, mata pelajaran, dan kelas yang diberikan. Pastikan jawaban pilihan ganda bervariasi dan pengecohnya masuk akal. Jangan membuat soal yang terlalu sulit untuk level SD. Selalu berikan respon dalam format JSON yang valid sesuai skema yang diminta, dan sertakan tipe soal ('pilihan_ganda', 'isian', 'uraian') untuk setiap soal.`;
+                const systemPrompt = `Anda adalah asisten pembuatan soal untuk guru SD. Buat soal berdasarkan topik, mata pelajaran, dan kelas yang diberikan. Pastikan jawaban pilihan ganda bervariasi dan pengecohnya masuk akal. Jangan membuat soal yang terlalu sulit untuk level SD.`;
                 
                 const jumlahPg = parseInt(promptData.jumlah_pg) || 0;
                 const jumlahIsian = parseInt(promptData.jumlah_isian) || 0;
@@ -2235,68 +2226,48 @@
                     Untuk setiap soal, sertakan properti "tipe" dengan nilai 'pilihan_ganda', 'isian', atau 'uraian'.
                 `;
 
-                const payload = {
-                    systemInstruction: {
-                        parts: [{ text: systemPrompt }]
-                    },
-                    contents: [{
-                        parts: [{ text: userQuery }]
-                    }],
-                    generationConfig: {
-                        responseMimeType: "application/json",
-                        responseSchema: {
-                            type: "ARRAY",
-                            items: {
-                                type: "OBJECT",
-                                properties: {
-                                    tipe: { type: "STRING" },
-                                    pertanyaan: { type: "STRING" },
-                                    pilihan: { 
-                                        type: "ARRAY",
-                                        items: { type: "STRING" }
+                const ai = new GoogleGenAI({ apiKey: apiKey });
+                
+                try {
+                    const response = await ai.models.generateContent({
+                        model: "gemini-2.5-flash",
+                        contents: userQuery,
+                        config: {
+                            systemInstruction: systemPrompt,
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        tipe: { type: Type.STRING },
+                                        pertanyaan: { type: Type.STRING },
+                                        pilihan: { 
+                                            type: Type.ARRAY,
+                                            items: { type: Type.STRING }
+                                        },
+                                        correct: { type: Type.NUMBER },
+                                        jawabanBenar: { type: Type.STRING }
                                     },
-                                    correct: { type: "NUMBER" },
-                                    jawabanBenar: { type: "STRING" }
-                                },
-                                required: ["tipe", "pertanyaan"]
+                                    required: ["tipe", "pertanyaan"]
+                                }
                             }
                         }
-                    }
-                };
-
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
                     });
 
-                    if (!response.ok) {
-                        const errorBody = await response.json();
-                        console.error('Gemini API Error:', errorBody);
-                        throw new Error(`API request failed with status ${response.status}`);
-                    }
+                    const jsonText = response.text;
+                    return JSON.parse(jsonText);
 
-                    const result = await response.json();
-                    const candidate = result.candidates?.[0];
-
-                    if (candidate && candidate.content?.parts?.[0]?.text) {
-                        const jsonText = candidate.content.parts[0].text;
-                        return JSON.parse(jsonText);
-                    } else {
-                        throw new Error("Invalid response structure from Gemini API.");
-                    }
                 } catch (error) {
-                    console.error('Error calling Gemini API:', error);
+                    console.error('Error calling Gemini API (Generate Questions):', error);
                     return null;
                 }
             },
             
             async gradeAnswer(questionText, correctAnswer, studentAnswer) {
-                const apiKey = "AIzaSyD-7OfbPmbjMBHj-eGPyFQJOpMQSH0fgzI";
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                const apiKey = "AIzaSyD-7OfbPmbjMBHj-eGPyFQJOpMQSH0fgzI"; // Used directly as per existing code for functional integrity
                 
-                const systemPrompt = "Anda adalah seorang guru ahli yang memeriksa jawaban ujian. Tugas Anda adalah menilai jawaban siswa berdasarkan pertanyaan dan kunci jawaban yang diberikan. Berikan respons HANYA dalam format JSON yang valid.";
+                const systemPrompt = "Anda adalah seorang guru ahli yang memeriksa jawaban ujian. Tugas Anda adalah menilai jawaban siswa berdasarkan pertanyaan dan kunci jawaban yang diberikan.";
 
                 const userQuery = `
                     Tolong nilai jawaban siswa berikut.
@@ -2304,61 +2275,41 @@
                     Kunci Jawaban: "${correctAnswer}"
                     Jawaban Siswa: "${studentAnswer}"
 
-                    Berdasarkan perbandingan, berikan nilai antara 0 dan 100 untuk jawaban siswa. 0 berarti salah total, dan 100 berarti benar sepenuhnya. Anda dapat memberikan nilai di antara rentang tersebut (misalnya 0, 10, 15, 20, 25, 30, dan seterusnya hingga 100) tergantung pada tingkat keakuratan dan kelengkapan jawaban siswa.
-
+                    Berdasarkan perbandingan, berikan nilai antara 0 dan 100 untuk jawaban siswa. 0 berarti salah total, dan 100 berarti benar sepenuhnya.
                     Berikan juga feedback singkat dan jelas mengenai kenapa nilai tersebut diberikan.
                 `;
-                
-                const payload = {
-                    systemInstruction: {
-                        parts: [{ text: systemPrompt }]
-                    },
-                    contents: [{
-                        parts: [{ text: userQuery }]
-                    }],
-                    generationConfig: {
-                        responseMimeType: "application/json",
-                        responseSchema: {
-                            type: "OBJECT",
-                            properties: {
-                                nilai: { type: "NUMBER" },
-                                feedback: { type: "STRING" }
-                            },
-                            required: ["nilai", "feedback"]
-                        }
-                    }
-                };
 
+                const ai = new GoogleGenAI({ apiKey: apiKey });
+                
                 try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                    const response = await ai.models.generateContent({
+                        model: "gemini-2.5-flash",
+                        contents: userQuery,
+                        config: {
+                            systemInstruction: systemPrompt,
+                            responseMimeType: "application/json",
+                            responseSchema: {
+                                type: Type.OBJECT,
+                                properties: {
+                                    nilai: { type: Type.NUMBER },
+                                    feedback: { type: Type.STRING }
+                                },
+                                required: ["nilai", "feedback"]
+                            }
+                        }
                     });
 
-                    if (!response.ok) {
-                        const errorBody = await response.json();
-                        console.error('Gemini API Grading Error:', errorBody);
-                        throw new Error(`API request failed with status ${response.status}`);
-                    }
+                    const jsonText = response.text;
+                    const parsedResult = JSON.parse(jsonText);
 
-                    const result = await response.json();
-                    const candidate = result.candidates?.[0];
-
-                    if (candidate && candidate.content?.parts?.[0]?.text) {
-                        const jsonText = candidate.content.parts[0].text;
-                        const parsedResult = JSON.parse(jsonText);
-                        // Ensure score is between 0 and 100
-                        if (typeof parsedResult.nilai !== 'number' || parsedResult.nilai < 0 || parsedResult.nilai > 100) {
-                            console.warn("AI returned an invalid score, defaulting to 0.", parsedResult.nilai);
-                            parsedResult.nilai = 0; // Default to 0 if invalid value
-                        } else {
-                            parsedResult.nilai = Math.round(parsedResult.nilai);
-                        }
-                        return parsedResult;
+                    if (typeof parsedResult.nilai !== 'number' || parsedResult.nilai < 0 || parsedResult.nilai > 100) {
+                        console.warn("AI returned an invalid score, defaulting to 0.", parsedResult.nilai);
+                        parsedResult.nilai = 0;
                     } else {
-                        throw new Error("Invalid response structure from Gemini API for grading.");
+                        parsedResult.nilai = Math.round(parsedResult.nilai);
                     }
+                    return parsedResult;
+
                 } catch (error) {
                     console.error('Error calling Gemini API for grading:', error);
                     return null;
@@ -4084,6 +4035,13 @@
                 e.preventDefault();
             }
         });
+
+        // Expose critical objects to global scope for inline HTML handlers
+        window.AppState = AppState;
+        window.Management = Management;
+        window.UI = UI;
+        window.Auth = Auth;
+        window.GeminiHelper = GeminiHelper;
     </script>
 </body>
 </html>
