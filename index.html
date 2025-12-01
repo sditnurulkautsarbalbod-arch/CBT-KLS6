@@ -299,7 +299,7 @@
             questions: [], // This will be populated from Google Sheets for the current exam
             currentView: 'login',
             selectedExamCode: null,
-            fullscreenViolations: 0,
+            violationCount: 0, // Replaces fullscreenViolations
             lastQuestionData: { semester: '', tahunAjaran: '' }, // To store last used question data for teacher
             filters: {
                 questions: { kelas: '', mataPelajaran: '', kode: '' },
@@ -3395,7 +3395,7 @@
                     AppState.selectedExamCode = examCode;
                     AppState.currentQuestion = 0;
                     AppState.examAnswers = {};
-                    AppState.fullscreenViolations = 0; // Reset violations
+                    AppState.violationCount = 0; // Reset violations
                     
                     try {
                         const settingsDoc = await db.collection('settings').doc('examConfig').get();
@@ -3415,6 +3415,7 @@
                     this.updateProgress();
 
                     document.addEventListener('fullscreenchange', this.handleFullscreenChange);
+                    document.addEventListener('visibilitychange', this.handleVisibilityChange);
 
                     return true;
                 } catch (error) {
@@ -3528,6 +3529,7 @@
 
                 // Remove security listeners before showing confirmation
                 document.removeEventListener('fullscreenchange', this.handleFullscreenChange);
+                document.removeEventListener('visibilitychange', this.handleVisibilityChange);
 
                 Swal.fire({
                     title: 'Sedang Memproses Jawaban...',
@@ -3707,6 +3709,7 @@
             async blockStudentAndExit() {
                 // Remove listeners to prevent loops
                 document.removeEventListener('fullscreenchange', this.handleFullscreenChange);
+                document.removeEventListener('visibilitychange', this.handleVisibilityChange);
                 if (AppState.examTimer) clearInterval(AppState.examTimer);
 
                 // Record the block in Firestore
@@ -3720,13 +3723,29 @@
                 // Show final message and log out
                 Swal.fire({
                     title: 'Anda Diblokir!',
-                    html: `Anda telah keluar dari mode layar penuh sebanyak 3 kali.<br>Akses Anda ke ujian ini telah diblokir. Silakan hubungi admin.`,
+                    html: `Anda telah berpindah tab atau meminimalkan browser sebanyak 3 kali.<br>Akses Anda ke ujian ini telah diblokir. Silakan hubungi admin.`,
                     icon: 'error',
                     confirmButtonText: 'OK',
                     allowOutsideClick: false
                 }).then(() => {
                     Auth.logout();
                 });
+            },
+
+            handleVisibilityChange() {
+                if (AppState.currentView !== 'exam') return;
+
+                if (document.hidden) {
+                    AppState.violationCount++;
+                    if (AppState.violationCount >= 3) {
+                        UI.blockStudentAndExit();
+                    }
+                } else {
+                     // User returned to tab
+                    if (AppState.violationCount < 3 && AppState.violationCount > 0) {
+                        UI.showNotification(`Peringatan: Anda telah meninggalkan tab ujian ${AppState.violationCount} kali. Akses akan diblokir jika mencapai 3 kali.`, 'warning');
+                    }
+                }
             },
 
             handleFullscreenChange() {
@@ -3736,22 +3755,16 @@
                 const warningText = document.getElementById('violationWarning');
 
                 if (!document.fullscreenElement) {
-                    // Exited fullscreen
+                    // Exited fullscreen - PAUSE
                     if (AppState.examTimer) {
                         clearInterval(AppState.examTimer);
                         AppState.examTimer = null;
                     }
                     
-                    AppState.fullscreenViolations++;
-
-                    if (AppState.fullscreenViolations >= 3) {
-                        UI.blockStudentAndExit();
-                    } else {
-                        warningText.textContent = `Peringatan: Anda telah keluar dari mode layar penuh ${AppState.fullscreenViolations} kali. Anda akan diblokir setelah 3 kali pelanggaran.`;
-                        reEnterModal.classList.remove('hidden');
-                    }
+                    warningText.textContent = ""; // Clear existing warning text as logic changed
+                    reEnterModal.classList.remove('hidden');
                 } else {
-                    // Re-entered fullscreen
+                    // Re-entered fullscreen - RESUME
                     reEnterModal.classList.add('hidden');
                     if (!AppState.examTimer && AppState.examTimeLeft > 0) {
                         UI.startTimer();
