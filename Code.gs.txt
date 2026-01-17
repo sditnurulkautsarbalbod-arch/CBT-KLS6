@@ -1,0 +1,931 @@
+/**
+ * CBT KLS 6 - Google Apps Script Backend
+ * =======================================
+ * Script ini menangani semua operasi data untuk aplikasi CBT
+ * menggunakan Google Sheets sebagai database.
+ * 
+ * SETUP:
+ * 1. Buat Google Spreadsheet baru
+ * 2. Buat sheets dengan nama: Users, Questions, Results, Grades, BlockedStudents, Settings
+ * 3. Deploy script ini sebagai Web App
+ * 4. Copy URL deployment ke SCRIPT_URL di index.html
+ */
+
+// ==================== KONFIGURASI ====================
+const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE'; // Ganti dengan ID Spreadsheet Anda
+const FOLDER_ID = 'YOUR_FOLDER_ID_HERE'; // Ganti dengan ID Folder Google Drive untuk menyimpan gambar
+
+// Nama-nama sheet
+const SHEET_NAMES = {
+  USERS: 'Users',
+  QUESTIONS: 'Questions', 
+  RESULTS: 'Results',
+  GRADES: 'Grades',
+  BLOCKED_STUDENTS: 'BlockedStudents',
+  SETTINGS: 'Settings'
+};
+
+// ==================== UTILITIES ====================
+
+/**
+ * Handle CORS untuk web app
+ */
+function doGet(e) {
+  return handleRequest(e);
+}
+
+function doPost(e) {
+  return handleRequest(e);
+}
+
+function handleRequest(e) {
+  const action = e.parameter.action;
+  let result;
+  
+  try {
+    switch(action) {
+      // Users
+      case 'getUsers':
+        result = getUsers();
+        break;
+      case 'addUser':
+        result = addUser(JSON.parse(e.parameter.data));
+        break;
+      case 'updateUser':
+        result = updateUser(e.parameter.id, JSON.parse(e.parameter.data));
+        break;
+      case 'deleteUser':
+        result = deleteUser(e.parameter.id);
+        break;
+        
+      // Questions
+      case 'getQuestions':
+        result = getQuestions();
+        break;
+      case 'addQuestion':
+        result = addQuestion(JSON.parse(e.parameter.data));
+        break;
+      case 'updateQuestion':
+        result = updateQuestion(e.parameter.id, JSON.parse(e.parameter.data));
+        break;
+      case 'deleteQuestion':
+        result = deleteQuestion(e.parameter.id);
+        break;
+        
+      // Results
+      case 'getResults':
+        result = getResults();
+        break;
+      case 'addResult':
+        result = addResult(JSON.parse(e.parameter.data));
+        break;
+      case 'updateResult':
+        result = updateResult(e.parameter.id, JSON.parse(e.parameter.data));
+        break;
+      case 'deleteResult':
+        result = deleteResult(e.parameter.id);
+        break;
+        
+      // Grades
+      case 'getGrades':
+        result = getGrades();
+        break;
+      case 'getGradesByStudent':
+        result = getGradesByStudent(e.parameter.username);
+        break;
+      case 'addGrade':
+        result = addGrade(JSON.parse(e.parameter.data));
+        break;
+      case 'updateGrade':
+        result = updateGrade(e.parameter.id, JSON.parse(e.parameter.data));
+        break;
+      case 'deleteGrade':
+        result = deleteGrade(e.parameter.id);
+        break;
+      case 'deleteGradesBatch':
+        result = deleteGradesBatch(JSON.parse(e.parameter.data));
+        break;
+      case 'getGradesPaginated':
+        result = getGradesPaginated(parseInt(e.parameter.limit) || 20, e.parameter.lastId || null);
+        break;
+        
+      // Blocked Students
+      case 'getBlockedStudents':
+        result = getBlockedStudents();
+        break;
+      case 'blockStudent':
+        result = blockStudent(JSON.parse(e.parameter.data));
+        break;
+      case 'unblockStudent':
+        result = unblockStudent(e.parameter.id);
+        break;
+      case 'unblockAllStudents':
+        result = unblockAllStudents();
+        break;
+      case 'isStudentBlocked':
+        result = isStudentBlocked(e.parameter.username, e.parameter.examCode);
+        break;
+        
+      // Settings
+      case 'getSettings':
+        result = getSettings(e.parameter.key);
+        break;
+      case 'saveSettings':
+        result = saveSettings(e.parameter.key, JSON.parse(e.parameter.data));
+        break;
+        
+      // Image Upload
+      case 'uploadImage':
+        result = uploadImage(JSON.parse(e.parameter.data));
+        break;
+      case 'uploadMultipleImages':
+        result = uploadMultipleImages(JSON.parse(e.parameter.data));
+        break;
+      case 'deleteImage':
+        result = deleteImage(e.parameter.fileId);
+        break;
+      case 'getImageUrl':
+        result = getImageUrl(e.parameter.fileId);
+        break;
+        
+      default:
+        result = { status: 'error', error: 'Unknown action: ' + action };
+    }
+  } catch (error) {
+    result = { status: 'error', error: error.toString() };
+  }
+  
+  return ContentService
+    .createTextOutput(JSON.stringify(result))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Get spreadsheet
+ */
+function getSpreadsheet() {
+  return SpreadsheetApp.openById(SPREADSHEET_ID);
+}
+
+/**
+ * Get or create sheet
+ */
+function getSheet(sheetName) {
+  const ss = getSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    initializeSheet(sheet, sheetName);
+  }
+  
+  return sheet;
+}
+
+/**
+ * Initialize sheet with headers
+ */
+function initializeSheet(sheet, sheetName) {
+  const headers = {
+    [SHEET_NAMES.USERS]: ['id', 'username', 'password', 'nama', 'role', 'kelas', 'createdAt'],
+    [SHEET_NAMES.QUESTIONS]: ['id', 'subject', 'grade', 'question', 'type', 'options', 'answer', 'points', 'createdAt'],
+    [SHEET_NAMES.RESULTS]: ['id', 'username', 'name', 'kelas', 'subject', 'answers', 'score', 'totalQuestions', 'correctAnswers', 'submittedAt'],
+    [SHEET_NAMES.GRADES]: ['id', 'username', 'name', 'kelas', 'subject', 'score', 'maxScore', 'percentage', 'grade', 'submittedAt'],
+    [SHEET_NAMES.BLOCKED_STUDENTS]: ['id', 'username', 'nama', 'examCode', 'reason', 'blockedAt'],
+    [SHEET_NAMES.SETTINGS]: ['key', 'value', 'updatedAt']
+  };
+  
+  if (headers[sheetName]) {
+    sheet.getRange(1, 1, 1, headers[sheetName].length).setValues([headers[sheetName]]);
+    sheet.getRange(1, 1, 1, headers[sheetName].length).setFontWeight('bold');
+  }
+}
+
+/**
+ * Generate unique ID
+ */
+function generateId() {
+  return Utilities.getUuid();
+}
+
+/**
+ * Get all data from sheet as objects
+ */
+function getAllData(sheetName) {
+  const sheet = getSheet(sheetName);
+  const data = sheet.getDataRange().getValues();
+  
+  if (data.length <= 1) return [];
+  
+  const headers = data[0];
+  const rows = data.slice(1);
+  
+  return rows.map((row, index) => {
+    const obj = { _rowIndex: index + 2 }; // +2 karena index 0 dan header
+    headers.forEach((header, i) => {
+      // Parse JSON untuk kolom tertentu
+      if (['options', 'answers', 'value'].includes(header) && row[i]) {
+        try {
+          obj[header] = JSON.parse(row[i]);
+        } catch {
+          obj[header] = row[i];
+        }
+      } else {
+        obj[header] = row[i];
+      }
+    });
+    return obj;
+  });
+}
+
+/**
+ * Find row by ID
+ */
+function findRowById(sheetName, id) {
+  const data = getAllData(sheetName);
+  return data.find(item => item.id === id);
+}
+
+// ==================== USERS ====================
+
+function getUsers() {
+  try {
+    const users = getAllData(SHEET_NAMES.USERS);
+    return { status: 'success', data: users };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function addUser(userData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.USERS);
+    const id = generateId();
+    const row = [
+      id,
+      userData.username,
+      userData.password,
+      userData.nama || userData.name,
+      userData.role || 'student',
+      userData.kelas || '',
+      new Date().toISOString()
+    ];
+    sheet.appendRow(row);
+    return { status: 'success', id: id };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function updateUser(id, userData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.USERS);
+    const item = findRowById(SHEET_NAMES.USERS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'User not found' };
+    }
+    
+    const row = [
+      id,
+      userData.username || item.username,
+      userData.password || item.password,
+      userData.nama || userData.name || item.nama,
+      userData.role || item.role,
+      userData.kelas || item.kelas,
+      item.createdAt
+    ];
+    
+    sheet.getRange(item._rowIndex, 1, 1, row.length).setValues([row]);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function deleteUser(id) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.USERS);
+    const item = findRowById(SHEET_NAMES.USERS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'User not found' };
+    }
+    
+    sheet.deleteRow(item._rowIndex);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+// ==================== QUESTIONS ====================
+
+function getQuestions() {
+  try {
+    const questions = getAllData(SHEET_NAMES.QUESTIONS);
+    return { status: 'success', data: questions };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function addQuestion(questionData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.QUESTIONS);
+    const id = generateId();
+    const row = [
+      id,
+      questionData.subject,
+      questionData.grade,
+      questionData.question,
+      questionData.type || 'multiple_choice',
+      JSON.stringify(questionData.options || []),
+      questionData.answer,
+      questionData.points || 1,
+      new Date().toISOString()
+    ];
+    sheet.appendRow(row);
+    return { status: 'success', id: id };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function updateQuestion(id, questionData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.QUESTIONS);
+    const item = findRowById(SHEET_NAMES.QUESTIONS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Question not found' };
+    }
+    
+    const row = [
+      id,
+      questionData.subject || item.subject,
+      questionData.grade || item.grade,
+      questionData.question || item.question,
+      questionData.type || item.type,
+      JSON.stringify(questionData.options || item.options || []),
+      questionData.answer || item.answer,
+      questionData.points || item.points,
+      item.createdAt
+    ];
+    
+    sheet.getRange(item._rowIndex, 1, 1, row.length).setValues([row]);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function deleteQuestion(id) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.QUESTIONS);
+    const item = findRowById(SHEET_NAMES.QUESTIONS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Question not found' };
+    }
+    
+    sheet.deleteRow(item._rowIndex);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+// ==================== RESULTS ====================
+
+function getResults() {
+  try {
+    const results = getAllData(SHEET_NAMES.RESULTS);
+    return { status: 'success', data: results };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function addResult(resultData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.RESULTS);
+    const id = generateId();
+    const row = [
+      id,
+      resultData.username,
+      resultData.name,
+      resultData.kelas,
+      resultData.subject,
+      JSON.stringify(resultData.answers || []),
+      resultData.score,
+      resultData.totalQuestions,
+      resultData.correctAnswers,
+      new Date().toISOString()
+    ];
+    sheet.appendRow(row);
+    return { status: 'success', id: id };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function updateResult(id, resultData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.RESULTS);
+    const item = findRowById(SHEET_NAMES.RESULTS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Result not found' };
+    }
+    
+    const row = [
+      id,
+      resultData.username || item.username,
+      resultData.name || item.name,
+      resultData.kelas || item.kelas,
+      resultData.subject || item.subject,
+      JSON.stringify(resultData.answers || item.answers || []),
+      resultData.score !== undefined ? resultData.score : item.score,
+      resultData.totalQuestions || item.totalQuestions,
+      resultData.correctAnswers !== undefined ? resultData.correctAnswers : item.correctAnswers,
+      item.submittedAt
+    ];
+    
+    sheet.getRange(item._rowIndex, 1, 1, row.length).setValues([row]);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function deleteResult(id) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.RESULTS);
+    const item = findRowById(SHEET_NAMES.RESULTS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Result not found' };
+    }
+    
+    sheet.deleteRow(item._rowIndex);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+// ==================== GRADES ====================
+
+function getGrades() {
+  try {
+    const grades = getAllData(SHEET_NAMES.GRADES);
+    return { status: 'success', data: grades };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function getGradesByStudent(username) {
+  try {
+    const grades = getAllData(SHEET_NAMES.GRADES);
+    const filtered = grades.filter(g => g.username === username);
+    return { status: 'success', data: filtered };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function getGradesPaginated(limit, lastId) {
+  try {
+    const grades = getAllData(SHEET_NAMES.GRADES);
+    
+    // Sort by submittedAt descending
+    grades.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+    
+    let startIndex = 0;
+    if (lastId) {
+      const lastIndex = grades.findIndex(g => g.id === lastId);
+      if (lastIndex !== -1) {
+        startIndex = lastIndex + 1;
+      }
+    }
+    
+    const paginated = grades.slice(startIndex, startIndex + limit);
+    const hasMore = startIndex + limit < grades.length;
+    
+    return { 
+      success: true, 
+      data: paginated,
+      hasMore: hasMore,
+      lastId: paginated.length > 0 ? paginated[paginated.length - 1].id : null
+    };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function addGrade(gradeData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.GRADES);
+    const id = generateId();
+    
+    // Hitung grade letter
+    const percentage = gradeData.percentage || (gradeData.score / gradeData.maxScore * 100);
+    const gradeLetter = calculateGradeLetter(percentage);
+    
+    const row = [
+      id,
+      gradeData.username,
+      gradeData.name,
+      gradeData.kelas,
+      gradeData.subject,
+      gradeData.score,
+      gradeData.maxScore,
+      percentage,
+      gradeLetter,
+      new Date().toISOString()
+    ];
+    sheet.appendRow(row);
+    return { status: 'success', id: id };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function updateGrade(id, gradeData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.GRADES);
+    const item = findRowById(SHEET_NAMES.GRADES, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Grade not found' };
+    }
+    
+    const score = gradeData.score !== undefined ? gradeData.score : item.score;
+    const maxScore = gradeData.maxScore || item.maxScore;
+    const percentage = (score / maxScore) * 100;
+    const gradeLetter = calculateGradeLetter(percentage);
+    
+    const row = [
+      id,
+      gradeData.username || item.username,
+      gradeData.name || item.name,
+      gradeData.kelas || item.kelas,
+      gradeData.subject || item.subject,
+      score,
+      maxScore,
+      percentage,
+      gradeLetter,
+      item.submittedAt
+    ];
+    
+    sheet.getRange(item._rowIndex, 1, 1, row.length).setValues([row]);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function deleteGrade(id) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.GRADES);
+    const item = findRowById(SHEET_NAMES.GRADES, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Grade not found' };
+    }
+    
+    sheet.deleteRow(item._rowIndex);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function deleteGradesBatch(data) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.GRADES);
+    const ids = data.ids || [];
+    
+    if (ids.length === 0) {
+      return { status: 'success', message: 'No grades to delete' };
+    }
+    
+    // Get all data to find row indices
+    const allGrades = getAllData(SHEET_NAMES.GRADES);
+    
+    // Find rows to delete and sort by row index descending
+    // (delete from bottom to top to avoid index shifting)
+    const rowsToDelete = allGrades
+      .filter(g => ids.includes(g.id))
+      .map(g => g._rowIndex)
+      .sort((a, b) => b - a);
+    
+    // Delete rows from bottom to top
+    rowsToDelete.forEach(rowIndex => {
+      sheet.deleteRow(rowIndex);
+    });
+    
+    return { status: 'success', deleted: rowsToDelete.length };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function calculateGradeLetter(percentage) {
+  if (percentage >= 90) return 'A';
+  if (percentage >= 80) return 'B';
+  if (percentage >= 70) return 'C';
+  if (percentage >= 60) return 'D';
+  return 'E';
+}
+
+// ==================== BLOCKED STUDENTS ====================
+
+function getBlockedStudents() {
+  try {
+    const blocked = getAllData(SHEET_NAMES.BLOCKED_STUDENTS);
+    return { status: 'success', data: blocked };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function blockStudent(studentData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.BLOCKED_STUDENTS);
+    
+    // Use custom ID if provided, otherwise generate from username + examCode
+    const id = studentData.id || `${studentData.username}_${studentData.examCode || 'unknown'}`;
+    
+    // Check if already blocked with same ID
+    const existing = getAllData(SHEET_NAMES.BLOCKED_STUDENTS);
+    if (existing.find(s => s.id === id)) {
+      return { status: 'success', message: 'Student already blocked' };
+    }
+    
+    const row = [
+      id,
+      studentData.username,
+      studentData.nama || studentData.name || '',
+      studentData.examCode || '',
+      studentData.reason || 'Terdeteksi keluar dari halaman ujian',
+      studentData.blockedAt || new Date().toISOString()
+    ];
+    sheet.appendRow(row);
+    return { status: 'success', id: id };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function unblockStudent(id) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.BLOCKED_STUDENTS);
+    const item = findRowById(SHEET_NAMES.BLOCKED_STUDENTS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Blocked student not found' };
+    }
+    
+    sheet.deleteRow(item._rowIndex);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function unblockAllStudents() {
+  try {
+    const sheet = getSheet(SHEET_NAMES.BLOCKED_STUDENTS);
+    const lastRow = sheet.getLastRow();
+    
+    if (lastRow > 1) {
+      sheet.deleteRows(2, lastRow - 1);
+    }
+    
+    return { status: 'success', message: 'All students unblocked' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function isStudentBlocked(username, examCode) {
+  try {
+    const blocked = getAllData(SHEET_NAMES.BLOCKED_STUDENTS);
+    
+    // Check with both username and examCode for specific exam blocking
+    const docId = `${username}_${examCode || ''}`;
+    const isBlocked = blocked.some(s => s.id === docId || (s.username === username && (!examCode || s.examCode === examCode)));
+    
+    return { status: 'success', blocked: isBlocked };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+// ==================== SETTINGS ====================
+
+function getSettings(key) {
+  try {
+    const settings = getAllData(SHEET_NAMES.SETTINGS);
+    
+    if (key) {
+      const setting = settings.find(s => s.key === key);
+      return { status: 'success', data: setting ? setting.value : null };
+    }
+    
+    // Return all settings as object
+    const settingsObj = {};
+    settings.forEach(s => {
+      settingsObj[s.key] = s.value;
+    });
+    return { status: 'success', data: settingsObj };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function saveSettings(key, value) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.SETTINGS);
+    const settings = getAllData(SHEET_NAMES.SETTINGS);
+    const existing = settings.find(s => s.key === key);
+    
+    if (existing) {
+      // Update existing
+      const row = [key, JSON.stringify(value), new Date().toISOString()];
+      sheet.getRange(existing._rowIndex, 1, 1, row.length).setValues([row]);
+    } else {
+      // Add new
+      const row = [key, JSON.stringify(value), new Date().toISOString()];
+      sheet.appendRow(row);
+    }
+    
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+// ==================== INITIALIZATION ====================
+
+/**
+ * Initialize all sheets - run this once after setup
+ */
+function initializeAllSheets() {
+  Object.values(SHEET_NAMES).forEach(sheetName => {
+    getSheet(sheetName);
+  });
+  return 'All sheets initialized!';
+}
+
+/**
+ * Add sample admin user - run this once after setup
+ */
+function addSampleAdmin() {
+  return addUser({
+    username: 'admin',
+    password: 'admin123',
+    nama: 'Administrator',
+    role: 'admin',
+    kelas: ''
+  });
+}
+
+// ==================== IMAGE UPLOAD ====================
+
+/**
+ * Get folder for storing images
+ */
+function getImageFolder() {
+  try {
+    return DriveApp.getFolderById(FOLDER_ID);
+  } catch (error) {
+    // If folder not found, create one in root
+    const folder = DriveApp.createFolder('CBT_Images');
+    console.log('Created new folder with ID: ' + folder.getId());
+    return folder;
+  }
+}
+
+/**
+ * Upload image to Google Drive
+ * @param {Object} data - { fileName: string, mimeType: string, base64Data: string }
+ * @returns {Object} - { success: boolean, fileId: string, fileUrl: string }
+ */
+function uploadImage(data) {
+  try {
+    if (!data.base64Data || !data.fileName) {
+      return { status: 'error', error: 'Missing required fields: base64Data and fileName' };
+    }
+    
+    const folder = getImageFolder();
+    
+    // Decode base64 data
+    const base64 = data.base64Data.replace(/^data:image\/\w+;base64,/, '');
+    const blob = Utilities.newBlob(
+      Utilities.base64Decode(base64),
+      data.mimeType || 'image/png',
+      data.fileName
+    );
+    
+    // Create file in folder
+    const file = folder.createFile(blob);
+    
+    // Set file to be publicly accessible
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    const fileId = file.getId();
+    const fileUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
+    const thumbnailUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+    
+    return { 
+      success: true, 
+      fileId: fileId,
+      fileUrl: fileUrl,
+      thumbnailUrl: thumbnailUrl,
+      fileName: data.fileName
+    };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+/**
+ * Delete image from Google Drive
+ * @param {string} fileId - Google Drive file ID
+ */
+function deleteImage(fileId) {
+  try {
+    if (!fileId) {
+      return { status: 'error', error: 'File ID is required' };
+    }
+    
+    const file = DriveApp.getFileById(fileId);
+    file.setTrashed(true);
+    
+    return { status: 'success', message: 'Image deleted successfully' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+/**
+ * Get image URL from file ID
+ * @param {string} fileId - Google Drive file ID
+ */
+function getImageUrl(fileId) {
+  try {
+    if (!fileId) {
+      return { status: 'error', error: 'File ID is required' };
+    }
+    
+    const file = DriveApp.getFileById(fileId);
+    const fileUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
+    const thumbnailUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+    
+    return { 
+      success: true, 
+      fileId: fileId,
+      fileUrl: fileUrl,
+      thumbnailUrl: thumbnailUrl,
+      fileName: file.getName(),
+      mimeType: file.getMimeType()
+    };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+/**
+ * Upload multiple images
+ * @param {Object} data - { images: [{ fileName, mimeType, base64Data }] }
+ */
+function uploadMultipleImages(data) {
+  try {
+    if (!data.images || !Array.isArray(data.images)) {
+      return { status: 'error', error: 'Images array is required' };
+    }
+    
+    const results = [];
+    for (const imageData of data.images) {
+      const result = uploadImage(imageData);
+      results.push(result);
+    }
+    
+    const successful = results.filter(r => r.success);
+    const failed = results.filter(r => !r.success);
+    
+    return { 
+      success: true, 
+      uploaded: successful,
+      failed: failed,
+      totalUploaded: successful.length,
+      totalFailed: failed.length
+    };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
