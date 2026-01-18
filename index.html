@@ -10,6 +10,8 @@
     <!-- jsPDF for PDF generation -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <!-- SheetJS for Excel parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     
     <!-- Google Apps Script Backend - Firebase removed -->
 
@@ -1005,6 +1007,261 @@
                         submitButton.innerHTML = 'Simpan';
                     }
                 });
+            },
+
+            // Bulk Upload User via Excel/CSV
+            showBulkUploadModal() {
+                const content = `
+                    <div class="space-y-4">
+                        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                            <p class="text-sm text-yellow-800">
+                                <i class="fas fa-info-circle mr-2"></i>
+                                Format file Excel/CSV harus memiliki kolom: <strong>username, password, nama, role, kelas</strong><br>
+                                Role yang valid: admin, guru, siswa. Kelas wajib diisi jika role adalah siswa.
+                            </p>
+                        </div>
+                        <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center" id="dropZone">
+                            <i class="fas fa-cloud-upload-alt text-4xl text-gray-400 mb-4"></i>
+                            <p class="text-gray-600 mb-4">Drag & drop file Excel/CSV di sini atau</p>
+                            <input type="file" id="bulkUploadFile" accept=".xlsx,.xls,.csv" class="hidden">
+                            <button type="button" onclick="document.getElementById('bulkUploadFile').click()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                                <i class="fas fa-folder-open mr-2"></i>Pilih File
+                            </button>
+                            <p id="selectedFileName" class="text-sm text-gray-500 mt-3"></p>
+                        </div>
+                        <div id="previewSection" class="hidden">
+                            <h4 class="font-semibold text-gray-700 mb-2">Preview Data:</h4>
+                            <div class="max-h-60 overflow-auto border rounded">
+                                <table class="min-w-full divide-y divide-gray-200" id="previewTable">
+                                    <thead class="bg-gray-50"><tr></tr></thead>
+                                    <tbody class="bg-white divide-y divide-gray-200"></tbody>
+                                </table>
+                            </div>
+                            <p id="previewCount" class="text-sm text-gray-600 mt-2"></p>
+                        </div>
+                        <div class="flex justify-end space-x-2 pt-4">
+                            <button type="button" onclick="UI.hideModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Batal</button>
+                            <button type="button" id="uploadBulkBtn" onclick="Management.processBulkUpload()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400" disabled>
+                                <i class="fas fa-upload mr-2"></i>Upload Semua
+                            </button>
+                        </div>
+                    </div>
+                `;
+                UI.showModal('Import Pengguna dari Excel/CSV', content);
+                
+                // Store parsed data temporarily
+                Management.bulkUploadData = [];
+                
+                const fileInput = document.getElementById('bulkUploadFile');
+                const dropZone = document.getElementById('dropZone');
+                
+                // Handle file selection
+                fileInput.addEventListener('change', (e) => this.handleBulkFile(e.target.files[0]));
+                
+                // Drag and drop handlers
+                dropZone.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    dropZone.classList.add('border-blue-500', 'bg-blue-50');
+                });
+                dropZone.addEventListener('dragleave', () => {
+                    dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+                });
+                dropZone.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+                    const file = e.dataTransfer.files[0];
+                    if (file) this.handleBulkFile(file);
+                });
+            },
+            
+            async handleBulkFile(file) {
+                if (!file) return;
+                
+                document.getElementById('selectedFileName').textContent = `File: ${file.name}`;
+                
+                try {
+                    let data = [];
+                    
+                    if (file.name.endsWith('.csv')) {
+                        // Parse CSV
+                        const text = await file.text();
+                        data = this.parseCSV(text);
+                    } else {
+                        // Parse Excel using SheetJS (XLSX)
+                        const arrayBuffer = await file.arrayBuffer();
+                        const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+                        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                        data = XLSX.utils.sheet_to_json(firstSheet);
+                    }
+                    
+                    // Validate and normalize data
+                    const validData = data.filter(row => {
+                        return row.username && row.password && row.nama && row.role;
+                    }).map(row => ({
+                        username: String(row.username).trim(),
+                        password: String(row.password).trim(),
+                        nama: String(row.nama).trim(),
+                        role: String(row.role).toLowerCase().trim(),
+                        kelas: row.kelas ? String(row.kelas).trim() : ''
+                    }));
+                    
+                    Management.bulkUploadData = validData;
+                    
+                    // Show preview
+                    this.showBulkPreview(validData);
+                    
+                } catch (error) {
+                    console.error('Error parsing file:', error);
+                    UI.showNotification('Gagal membaca file: ' + error.message, 'error');
+                }
+            },
+            
+            parseCSV(text) {
+                const lines = text.split(/\r?\n/).filter(line => line.trim());
+                if (lines.length < 2) return [];
+                
+                const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+                const data = [];
+                
+                for (let i = 1; i < lines.length; i++) {
+                    const values = lines[i].split(',').map(v => v.trim());
+                    const row = {};
+                    headers.forEach((header, index) => {
+                        row[header] = values[index] || '';
+                    });
+                    data.push(row);
+                }
+                
+                return data;
+            },
+            
+            showBulkPreview(data) {
+                const previewSection = document.getElementById('previewSection');
+                const previewTable = document.getElementById('previewTable');
+                const uploadBtn = document.getElementById('uploadBulkBtn');
+                
+                if (data.length === 0) {
+                    previewSection.classList.add('hidden');
+                    uploadBtn.disabled = true;
+                    UI.showNotification('Tidak ada data valid ditemukan dalam file.', 'warning');
+                    return;
+                }
+                
+                // Build table header
+                const thead = previewTable.querySelector('thead tr');
+                thead.innerHTML = '<th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">No</th>' +
+                    '<th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Username</th>' +
+                    '<th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Nama</th>' +
+                    '<th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>' +
+                    '<th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Kelas</th>' +
+                    '<th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>';
+                
+                // Build table body (show max 10 rows)
+                const tbody = previewTable.querySelector('tbody');
+                const displayData = data.slice(0, 10);
+                tbody.innerHTML = displayData.map((row, i) => {
+                    const isValidRole = ['admin', 'guru', 'siswa'].includes(row.role);
+                    const needsKelas = row.role === 'siswa' && !row.kelas;
+                    const status = !isValidRole ? 'Role tidak valid' : needsKelas ? 'Kelas kosong' : 'OK';
+                    const statusClass = status === 'OK' ? 'text-green-600' : 'text-red-600';
+                    
+                    return `<tr>
+                        <td class="px-3 py-2 text-sm">${i + 1}</td>
+                        <td class="px-3 py-2 text-sm">${row.username}</td>
+                        <td class="px-3 py-2 text-sm">${row.nama}</td>
+                        <td class="px-3 py-2 text-sm">${row.role}</td>
+                        <td class="px-3 py-2 text-sm">${row.kelas || '-'}</td>
+                        <td class="px-3 py-2 text-sm ${statusClass}">${status}</td>
+                    </tr>`;
+                }).join('');
+                
+                document.getElementById('previewCount').textContent = 
+                    `Total: ${data.length} pengguna` + (data.length > 10 ? ` (menampilkan 10 pertama)` : '');
+                
+                previewSection.classList.remove('hidden');
+                uploadBtn.disabled = false;
+            },
+            
+            async processBulkUpload() {
+                const data = Management.bulkUploadData;
+                if (!data || data.length === 0) {
+                    UI.showNotification('Tidak ada data untuk diupload.', 'warning');
+                    return;
+                }
+                
+                const uploadBtn = document.getElementById('uploadBulkBtn');
+                uploadBtn.disabled = true;
+                uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupload...';
+                
+                let successCount = 0;
+                let failCount = 0;
+                const errors = [];
+                
+                // Upload one by one to Google Sheets
+                for (const user of data) {
+                    try {
+                        // Validate role
+                        if (!['admin', 'guru', 'siswa'].includes(user.role)) {
+                            throw new Error(`Role tidak valid: ${user.role}`);
+                        }
+                        
+                        // Clear kelas for non-siswa
+                        if (user.role !== 'siswa') {
+                            user.kelas = '';
+                        }
+                        
+                        await callGoogleScript('GET', { 
+                            action: 'addUser', 
+                            data: user 
+                        });
+                        successCount++;
+                    } catch (error) {
+                        failCount++;
+                        errors.push(`${user.username}: ${error.message}`);
+                    }
+                }
+                
+                // Refresh user data
+                await fetchUsersFromGoogleScript();
+                
+                UI.hideModal();
+                UI.showUserManagement();
+                
+                // Show result
+                if (failCount === 0) {
+                    UI.showNotification(`Berhasil mengupload ${successCount} pengguna ke Google Sheets!`, 'success');
+                } else {
+                    Swal.fire({
+                        icon: 'warning',
+                        title: 'Upload Selesai',
+                        html: `
+                            <p>Berhasil: <strong>${successCount}</strong> pengguna</p>
+                            <p>Gagal: <strong>${failCount}</strong> pengguna</p>
+                            ${errors.length > 0 ? `<div class="mt-2 text-left text-sm text-red-600 max-h-32 overflow-auto">
+                                ${errors.slice(0, 5).join('<br>')}
+                                ${errors.length > 5 ? `<br>...dan ${errors.length - 5} error lainnya` : ''}
+                            </div>` : ''}
+                        `
+                    });
+                }
+            },
+            
+            downloadUserTemplate() {
+                // Create template CSV
+                const template = 'username,password,nama,role,kelas\n' +
+                    'user001,password123,Ahmad Fadhil,siswa,6A\n' +
+                    'user002,password123,Budi Santoso,siswa,6B\n' +
+                    'guru001,password123,Ibu Siti,guru,\n' +
+                    'admin001,password123,Administrator,admin,';
+                
+                const blob = new Blob([template], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'template_pengguna.csv';
+                link.click();
+                URL.revokeObjectURL(link.href);
+                
+                UI.showNotification('Template berhasil didownload!', 'success');
             },
 
             viewUser(id) {
@@ -3283,42 +3540,24 @@
             async showSettings() {
                 // Google Apps Script Integration for Settings with IndexedDB Cache
                 const content = document.getElementById('dashboardContent');
-                content.innerHTML = `<div class="text-center p-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-600"></i></div>`;
-
+                const currentApiKey = localStorage.getItem('geminiApiKey') || '';
+                
                 let currentDuration = 60; // Default duration in minutes
                 
+                // Try IndexedDB cache first for instant render
                 try {
-                    // Try IndexedDB cache first
                     const cachedSettings = await IndexedDB.get('settings', 'examConfig');
                     if (cachedSettings && cachedSettings.value && cachedSettings.value.durationMinutes) {
                         currentDuration = cachedSettings.value.durationMinutes;
                         console.log('Settings loaded from IndexedDB cache');
                     }
-                    
-                    // Fetch from server in background to update cache (if online)
-                    if (navigator.onLine) {
-                        const settingsResult = await callGoogleScript('GET', { action: 'getSettings', key: 'examConfig' });
-                        if (settingsResult.status === 'success' && settingsResult.data && settingsResult.data.durationMinutes) {
-                            currentDuration = settingsResult.data.durationMinutes;
-                            // Cache sudah diupdate di callGoogleScript
-                        }
-                    }
-                } catch (error) {
-                    console.error("Could not load exam settings:", error);
-                    // Gunakan cache jika ada error
-                    try {
-                        const cachedSettings = await IndexedDB.get('settings', 'examConfig');
-                        if (cachedSettings && cachedSettings.value) {
-                            currentDuration = cachedSettings.value.durationMinutes || 60;
-                        }
-                    } catch (e) {
-                        console.warn('Cache also failed:', e);
-                    }
+                } catch (e) {
+                    console.warn('Cache read failed:', e);
                 }
-
-                const currentApiKey = localStorage.getItem('geminiApiKey') || '';
-
-                content.innerHTML = `
+                
+                // Render UI immediately with cached/default value
+                const renderSettingsUI = (duration) => {
+                    content.innerHTML = `
                     <div class="fade-in">
                         <h2 class="text-2xl font-bold text-gray-900 mb-6">Pengaturan Ujian</h2>
                         <div class="max-w-lg mx-auto bg-white rounded-lg shadow p-8">
@@ -3328,7 +3567,7 @@
                                     <p class="text-sm text-gray-500 mb-3">Atur berapa lama waktu yang dimiliki siswa untuk menyelesaikan ujian.</p>
                                     <input type="number" id="examDuration" name="examDuration" min="1" required
                                            class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                           value="${currentDuration}">
+                                           value="${duration}">
                                 </div>
                                 <hr class="my-6 border-gray-200">
                                 <div class="mb-6">
@@ -3351,55 +3590,77 @@
                         <div id="blockedStudentsSection" class="mt-12"></div>
                     </div>
                 `;
+                    
+                    // Setup form submit handler
+                    document.getElementById('settingsForm').addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const newDuration = parseInt(document.getElementById('examDuration').value);
+                        const newApiKey = document.getElementById('geminiApiKey').value.trim();
 
-                document.getElementById('settingsForm').addEventListener('submit', async (e) => {
-                    e.preventDefault();
-                    const newDuration = parseInt(document.getElementById('examDuration').value);
-                    const newApiKey = document.getElementById('geminiApiKey').value.trim();
-
-                    if (isNaN(newDuration) || newDuration <= 0) {
-                        UI.showNotification('Masukkan durasi yang valid.', 'error');
-                        return;
-                    }
-
-                    const submitButton = e.target.querySelector('button[type="submit"]');
-                    submitButton.disabled = true;
-                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Menyimpan...';
-
-                    try {
-                        // Save duration to Google Apps Script (Shared setting)
-                        await callGoogleScript('GET', {
-                            action: 'saveSettings',
-                            key: 'examConfig',
-                            data: JSON.stringify({ durationMinutes: newDuration })
-                        });
-                        
-                        // Update IndexedDB cache
-                        await IndexedDB.put('settings', { 
-                            key: 'examConfig', 
-                            value: { durationMinutes: newDuration },
-                            updatedAt: new Date().toISOString()
-                        });
-
-                        // Save API Key to localStorage (Private setting per browser)
-                        if (newApiKey) {
-                            localStorage.setItem('geminiApiKey', newApiKey);
-                        } else {
-                            localStorage.removeItem('geminiApiKey');
+                        if (isNaN(newDuration) || newDuration <= 0) {
+                            UI.showNotification('Masukkan durasi yang valid.', 'error');
+                            return;
                         }
 
-                        UI.showNotification('Pengaturan berhasil disimpan!', 'success');
-                    } catch (error) {
-                        console.error("Error saving settings:", error);
-                        UI.showNotification('Gagal menyimpan pengaturan!', 'error');
-                    } finally {
-                        submitButton.disabled = false;
-                        submitButton.innerHTML = '<i class="fas fa-save mr-2"></i>Simpan Pengaturan';
-                    }
-                });
+                        const submitButton = e.target.querySelector('button[type="submit"]');
+                        submitButton.disabled = true;
+                        submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Menyimpan...';
 
-                // Load and render blocked students
-                this.renderBlockedStudents();
+                        try {
+                            // Save duration to Google Apps Script (Shared setting)
+                            await callGoogleScript('GET', {
+                                action: 'saveSettings',
+                                key: 'examConfig',
+                                data: JSON.stringify({ durationMinutes: newDuration })
+                            });
+                            
+                            // Update IndexedDB cache
+                            await IndexedDB.put('settings', { 
+                                key: 'examConfig', 
+                                value: { durationMinutes: newDuration },
+                                updatedAt: new Date().toISOString()
+                            });
+
+                            // Save API Key to localStorage (Private setting per browser)
+                            if (newApiKey) {
+                                localStorage.setItem('geminiApiKey', newApiKey);
+                            } else {
+                                localStorage.removeItem('geminiApiKey');
+                            }
+
+                            UI.showNotification('Pengaturan berhasil disimpan!', 'success');
+                        } catch (error) {
+                            console.error("Error saving settings:", error);
+                            UI.showNotification('Gagal menyimpan pengaturan!', 'error');
+                        } finally {
+                            submitButton.disabled = false;
+                            submitButton.innerHTML = '<i class="fas fa-save mr-2"></i>Simpan Pengaturan';
+                        }
+                    });
+                    
+                    // Load and render blocked students
+                    this.renderBlockedStudents();
+                };
+                
+                // Render UI immediately with cached value
+                renderSettingsUI(currentDuration);
+                
+                // Fetch from server in background to update cache (non-blocking)
+                if (navigator.onLine) {
+                    callGoogleScript('GET', { action: 'getSettings', key: 'examConfig' })
+                        .then(settingsResult => {
+                            if (settingsResult.status === 'success' && settingsResult.data && settingsResult.data.durationMinutes) {
+                                const serverDuration = settingsResult.data.durationMinutes;
+                                // Only update if different from current value
+                                const durationInput = document.getElementById('examDuration');
+                                if (durationInput && parseInt(durationInput.value) !== serverDuration) {
+                                    durationInput.value = serverDuration;
+                                    console.log('Settings updated from server:', serverDuration);
+                                }
+                            }
+                        })
+                        .catch(err => console.warn('Background settings fetch failed:', err));
+                }
             },
 
             async renderBlockedStudents() {
@@ -3484,7 +3745,20 @@
                 const content = document.getElementById('dashboardContent');
                 content.innerHTML = `
                     <div class="fade-in">
-                        <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-gray-900">Manajemen Pengguna</h2><button onclick="Management.showAddUserModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition duration-200"><i class="fas fa-plus mr-2"></i>Tambah Pengguna</button></div>
+                        <div class="flex justify-between items-center mb-6">
+                            <h2 class="text-2xl font-bold text-gray-900">Manajemen Pengguna</h2>
+                            <div class="flex space-x-2">
+                                <button onclick="Management.showBulkUploadModal()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition duration-200">
+                                    <i class="fas fa-file-excel mr-2"></i>Import Excel
+                                </button>
+                                <button onclick="Management.downloadUserTemplate()" class="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 transition duration-200">
+                                    <i class="fas fa-download mr-2"></i>Template
+                                </button>
+                                <button onclick="Management.showAddUserModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition duration-200">
+                                    <i class="fas fa-plus mr-2"></i>Tambah Pengguna
+                                </button>
+                            </div>
+                        </div>
                         
                         <!-- Filter Section -->
                         <div class="bg-white rounded-lg shadow p-6 mb-6">
