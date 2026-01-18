@@ -970,23 +970,40 @@
                 `;
                 UI.showModal('Tambah Pengguna', content);
                 
-                document.getElementById('addUserForm').addEventListener('submit', (e) => {
+                document.getElementById('addUserForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const formData = new FormData(e.target);
-                    const userData = Object.fromEntries(formData);
+                    const form = e.target;
+                    const submitButton = form.querySelector('button[type="submit"]');
+                    submitButton.disabled = true;
+                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Menyimpan...';
                     
-                    if (userData.role !== 'siswa') {
-                        userData.kelas = '';
+                    try {
+                        const formData = new FormData(form);
+                        const userData = Object.fromEntries(formData);
+                        
+                        if (userData.role !== 'siswa') {
+                            userData.kelas = '';
+                        }
+                        
+                        // Simpan ke Google Sheets
+                        await callGoogleScript('GET', { 
+                            action: 'addUser', 
+                            data: userData 
+                        });
+                        
+                        // Refresh data user dari Google Sheets
+                        await fetchUsersFromGoogleScript();
+                        
+                        UI.hideModal();
+                        UI.showUserManagement();
+                        UI.showNotification('Pengguna berhasil ditambahkan ke Google Sheets!', 'success');
+                    } catch (error) {
+                        console.error('Error adding user:', error);
+                        UI.showNotification('Gagal menambahkan pengguna: ' + error.message, 'error');
+                    } finally {
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = 'Simpan';
                     }
-                    
-                    AppState.users.push({
-                        id: this.generateId(),
-                        ...userData
-                    });
-                    
-                    UI.hideModal();
-                    UI.showUserManagement();
-                    UI.showNotification('Pengguna berhasil ditambahkan! Perubahan hanya bersifat lokal.', 'success');
                 });
             },
 
@@ -1050,30 +1067,71 @@
                 `;
                 UI.showModal('Edit Pengguna', content);
                 
-                document.getElementById('editUserForm').addEventListener('submit', (e) => {
+                document.getElementById('editUserForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const formData = new FormData(e.target);
-                    const userData = Object.fromEntries(formData);
+                    const form = e.target;
+                    const submitButton = form.querySelector('button[type="submit"]');
+                    submitButton.disabled = true;
+                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupdate...';
                     
-                    if (userData.role !== 'siswa') {
-                        userData.kelas = '';
-                    }
-                    
-                    const index = AppState.users.findIndex(u => u.id == userData.id);
-                    if (index !== -1) {
-                        AppState.users[index] = { ...AppState.users[index], ...userData };
+                    try {
+                        const formData = new FormData(form);
+                        const userData = Object.fromEntries(formData);
+                        
+                        if (userData.role !== 'siswa') {
+                            userData.kelas = '';
+                        }
+                        
+                        // Update ke Google Sheets
+                        await callGoogleScript('GET', { 
+                            action: 'updateUser', 
+                            id: userData.id,
+                            data: userData 
+                        });
+                        
+                        // Refresh data user dari Google Sheets
+                        await fetchUsersFromGoogleScript();
+                        
                         UI.hideModal();
                         UI.showUserManagement();
-                        UI.showNotification('Pengguna berhasil diupdate! Perubahan hanya bersifat lokal.', 'success');
+                        UI.showNotification('Pengguna berhasil diupdate ke Google Sheets!', 'success');
+                    } catch (error) {
+                        console.error('Error updating user:', error);
+                        UI.showNotification('Gagal mengupdate pengguna: ' + error.message, 'error');
+                    } finally {
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = 'Update';
                     }
                 });
             },
 
             deleteUser(id) {
-                UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus pengguna ini? Perubahan hanya bersifat lokal.', () => {
-                    AppState.users = AppState.users.filter(u => u.id != id);
-                    UI.showUserManagement();
-                    UI.showNotification('Pengguna berhasil dihapus secara lokal!', 'success');
+                UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus pengguna ini?', async () => {
+                    Swal.fire({
+                        title: 'Menghapus...',
+                        text: 'Sedang menghapus pengguna dari Google Sheets.',
+                        allowOutsideClick: false,
+                        didOpen: () => { Swal.showLoading(); }
+                    });
+                    
+                    try {
+                        // Hapus dari Google Sheets
+                        await callGoogleScript('GET', { 
+                            action: 'deleteUser', 
+                            id: id 
+                        });
+                        
+                        // Refresh data user dari Google Sheets
+                        await fetchUsersFromGoogleScript();
+                        
+                        Swal.close();
+                        UI.showUserManagement();
+                        UI.showNotification('Pengguna berhasil dihapus dari Google Sheets!', 'success');
+                    } catch (error) {
+                        Swal.close();
+                        console.error('Error deleting user:', error);
+                        UI.showNotification('Gagal menghapus pengguna: ' + error.message, 'error');
+                    }
                 });
             },
 
