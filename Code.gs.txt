@@ -22,7 +22,9 @@ const SHEET_NAMES = {
   RESULTS: 'Results',
   GRADES: 'Grades',
   BLOCKED_STUDENTS: 'BlockedStudents',
-  SETTINGS: 'Settings'
+  SETTINGS: 'Settings',
+  CLASSES: 'Classes',
+  SUBJECTS: 'Subjects'
 };
 
 // ==================== UTILITIES ====================
@@ -134,6 +136,34 @@ function handleRequest(e) {
         result = saveSettings(e.parameter.key, JSON.parse(e.parameter.data));
         break;
         
+      // Classes
+      case 'getClasses':
+        result = getClasses();
+        break;
+      case 'addClass':
+        result = addClass(JSON.parse(e.parameter.data));
+        break;
+      case 'updateClass':
+        result = updateClass(e.parameter.id, JSON.parse(e.parameter.data));
+        break;
+      case 'deleteClass':
+        result = deleteClass(e.parameter.id);
+        break;
+        
+      // Subjects
+      case 'getSubjects':
+        result = getSubjects();
+        break;
+      case 'addSubject':
+        result = addSubject(JSON.parse(e.parameter.data));
+        break;
+      case 'updateSubject':
+        result = updateSubject(e.parameter.id, JSON.parse(e.parameter.data));
+        break;
+      case 'deleteSubject':
+        result = deleteSubject(e.parameter.id);
+        break;
+        
       // Image Upload
       case 'uploadImage':
         result = uploadImage(JSON.parse(e.parameter.data));
@@ -192,7 +222,9 @@ function initializeSheet(sheet, sheetName) {
     [SHEET_NAMES.RESULTS]: ['id', 'username', 'name', 'kelas', 'subject', 'answers', 'score', 'totalQuestions', 'correctAnswers', 'submittedAt'],
     [SHEET_NAMES.GRADES]: ['id', 'username', 'name', 'kelas', 'subject', 'score', 'maxScore', 'percentage', 'grade', 'submittedAt'],
     [SHEET_NAMES.BLOCKED_STUDENTS]: ['id', 'username', 'nama', 'examCode', 'reason', 'blockedAt'],
-    [SHEET_NAMES.SETTINGS]: ['key', 'value', 'updatedAt']
+    [SHEET_NAMES.SETTINGS]: ['key', 'value', 'updatedAt'],
+    [SHEET_NAMES.CLASSES]: ['id', 'nama', 'deskripsi', 'createdAt'],
+    [SHEET_NAMES.SUBJECTS]: ['id', 'nama', 'deskripsi', 'createdAt']
   };
   
   if (headers[sheetName]) {
@@ -763,6 +795,140 @@ function saveSettings(key, value) {
       sheet.appendRow(row);
     }
     
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+// ==================== CLASSES ====================
+
+function getClasses() {
+  try {
+    const classes = getAllData(SHEET_NAMES.CLASSES);
+    return { status: 'success', data: classes };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function addClass(classData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.CLASSES);
+    const id = generateId();
+    const row = [
+      id,
+      classData.nama,
+      classData.deskripsi || '',
+      new Date().toISOString()
+    ];
+    sheet.appendRow(row);
+    return { status: 'success', id: id };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function updateClass(id, classData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.CLASSES);
+    const item = findRowById(SHEET_NAMES.CLASSES, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Class not found' };
+    }
+    
+    const row = [
+      id,
+      classData.nama || item.nama,
+      classData.deskripsi || item.deskripsi,
+      item.createdAt
+    ];
+    
+    sheet.getRange(item._rowIndex, 1, 1, row.length).setValues([row]);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function deleteClass(id) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.CLASSES);
+    const item = findRowById(SHEET_NAMES.CLASSES, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Class not found' };
+    }
+    
+    sheet.deleteRow(item._rowIndex);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+// ==================== SUBJECTS ====================
+
+function getSubjects() {
+  try {
+    const subjects = getAllData(SHEET_NAMES.SUBJECTS);
+    return { status: 'success', data: subjects };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function addSubject(subjectData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.SUBJECTS);
+    const id = generateId();
+    const row = [
+      id,
+      subjectData.nama,
+      subjectData.deskripsi || '',
+      new Date().toISOString()
+    ];
+    sheet.appendRow(row);
+    return { status: 'success', id: id };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function updateSubject(id, subjectData) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.SUBJECTS);
+    const item = findRowById(SHEET_NAMES.SUBJECTS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Subject not found' };
+    }
+    
+    const row = [
+      id,
+      subjectData.nama || item.nama,
+      subjectData.deskripsi || item.deskripsi,
+      item.createdAt
+    ];
+    
+    sheet.getRange(item._rowIndex, 1, 1, row.length).setValues([row]);
+    return { status: 'success' };
+  } catch (error) {
+    return { status: 'error', error: error.toString() };
+  }
+}
+
+function deleteSubject(id) {
+  try {
+    const sheet = getSheet(SHEET_NAMES.SUBJECTS);
+    const item = findRowById(SHEET_NAMES.SUBJECTS, id);
+    
+    if (!item) {
+      return { status: 'error', error: 'Subject not found' };
+    }
+    
+    sheet.deleteRow(item._rowIndex);
     return { status: 'success' };
   } catch (error) {
     return { status: 'error', error: error.toString() };

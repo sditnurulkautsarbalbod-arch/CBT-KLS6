@@ -802,29 +802,9 @@
             },
             // Users are now fetched from Google Script
             users: [],
-            // Classes and Subjects remain local
-            classes: [
-                { id: 1, nama: '4A', deskripsi: 'Kelas 4A' }, { id: 2, nama: '4B', deskripsi: 'Kelas 4B' },
-                { id: 3, nama: '4C', deskripsi: 'Kelas 4C' }, { id: 4, nama: '4D', deskripsi: 'Kelas 4D' },
-                { id: 5, nama: '5A', deskripsi: 'Kelas 5A' }, { id: 6, nama: '5B', deskripsi: 'Kelas 5B' },
-                { id: 9, nama: '6A', deskripsi: 'Kelas 6A' }, { id: 10, nama: '6B', deskripsi: 'Kelas 6B' }
-            ],
-            subjects: [
-                { id: 1, nama: 'Bahasa Indonesia', deskripsi: 'Mata pelajaran Bahasa Indonesia' },
-                { id: 2, nama: 'Matematika', deskripsi: 'Mata pelajaran Matematika' },
-                { id: 3, nama: 'Bahasa Inggris', deskripsi: 'Mata pelajaran Bahasa Inggris' },
-                { id: 4, nama: 'Pend. Pancasila', deskripsi: 'Mata pelajaran Pend. Pancasila' },
-                { id: 5, nama: 'IPAS', deskripsi: 'Mata pelajaran IPAS' },
-                { id: 6, nama: 'Seni Rupa', deskripsi: 'Mata pelajaran Seni Rupa' },
-                { id: 7, nama: 'Tauhid', deskripsi: 'Mata pelajaran Tauhid' },
-                { id: 8, nama: 'Bahasa Arab', deskripsi: 'Mata pelajaran Bahasa Arab' },
-                { id: 9, nama: 'Fikih', deskripsi: 'Mata pelajaran Fikih' },
-                { id: 10, nama: 'Siroh', deskripsi: 'Mata pelajaran Siroh' },
-                { id: 11, nama: 'Akhlak', deskripsi: 'Mata pelajaran Akhlak' },
-                { id: 12, nama: 'Hadits', deskripsi: 'Mata pelajaran Hadits' },
-                { id: 13, nama: 'Khot', deskripsi: 'Mata pelajaran Khot' },
-                { id: 14, nama: 'PJOK', deskripsi: 'Mata pelajaran PJOK' }
-            ]
+            // Classes and Subjects are now fetched from Google Script
+            classes: [],
+            subjects: []
         };
         
         // =================================================================
@@ -904,7 +884,7 @@
                 if (result.status === 'success' && Array.isArray(result.data)) {
                     AppState.users = result.data.map((user, index) => ({
                         ...user,
-                        id: `gs-user-${index}`
+                        id: user.id || `gs-user-${index}`
                     }));
                     console.log('User data loaded successfully from Google Script.');
                     return true;
@@ -914,8 +894,48 @@
             } catch (error) {
                 console.error('Failed to fetch user data:', error);
                 const loginError = document.getElementById('loginError');
-                loginError.textContent = 'Gagal memuat data pengguna. Silakan muat ulang halaman.';
-                loginError.classList.remove('hidden');
+                if (loginError) {
+                    loginError.textContent = 'Gagal memuat data pengguna. Silakan muat ulang halaman.';
+                    loginError.classList.remove('hidden');
+                }
+                return false;
+            }
+        }
+
+        async function fetchClassesFromGoogleScript() {
+            try {
+                const result = await callGoogleScript('GET', { action: 'getClasses' });
+                if (result.status === 'success' && Array.isArray(result.data)) {
+                    AppState.classes = result.data.map((cls) => ({
+                        ...cls,
+                        id: cls.id
+                    }));
+                    console.log('Classes data loaded successfully from Google Script.');
+                    return true;
+                } else {
+                    throw new Error('Invalid data format received from Google Script for classes.');
+                }
+            } catch (error) {
+                console.error('Failed to fetch classes data:', error);
+                return false;
+            }
+        }
+
+        async function fetchSubjectsFromGoogleScript() {
+            try {
+                const result = await callGoogleScript('GET', { action: 'getSubjects' });
+                if (result.status === 'success' && Array.isArray(result.data)) {
+                    AppState.subjects = result.data.map((subj) => ({
+                        ...subj,
+                        id: subj.id
+                    }));
+                    console.log('Subjects data loaded successfully from Google Script.');
+                    return true;
+                } else {
+                    throw new Error('Invalid data format received from Google Script for subjects.');
+                }
+            } catch (error) {
+                console.error('Failed to fetch subjects data:', error);
                 return false;
             }
         }
@@ -1411,24 +1431,43 @@
                 `;
                 UI.showModal('Tambah Kelas', content);
                 
-                document.getElementById('addClassForm').addEventListener('submit', (e) => {
+                document.getElementById('addClassForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const formData = new FormData(e.target);
-                    const classData = Object.fromEntries(formData);
+                    const form = e.target;
+                    const submitButton = form.querySelector('button[type="submit"]');
+                    submitButton.disabled = true;
+                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Menyimpan...';
                     
-                    AppState.classes.push({
-                        id: this.generateId(),
-                        ...classData
-                    });
-                    
-                    UI.hideModal();
-                    UI.showClassManagement();
-                    UI.showNotification('Kelas berhasil ditambahkan!', 'success');
+                    try {
+                        const formData = new FormData(form);
+                        const classData = Object.fromEntries(formData);
+                        
+                        await callGoogleScript('GET', { 
+                            action: 'addClass', 
+                            data: classData 
+                        });
+                        
+                        await fetchClassesFromGoogleScript();
+                        
+                        UI.hideModal();
+                        UI.showClassManagement();
+                        UI.showNotification('Kelas berhasil ditambahkan ke Google Sheets!', 'success');
+                    } catch (error) {
+                        console.error('Error adding class:', error);
+                        UI.showNotification('Gagal menambahkan kelas: ' + error.message, 'error');
+                    } finally {
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = 'Simpan';
+                    }
                 });
             },
 
             editClass(id) {
                 const cls = AppState.classes.find(c => c.id == id);
+                if (!cls) {
+                    UI.showNotification('Kelas tidak ditemukan!', 'error');
+                    return;
+                }
                 const content = `
                     <form id="editClassForm" class="space-y-4">
                         <input type="hidden" name="id" value="${cls.id}">
@@ -1438,7 +1477,7 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Deskripsi</label>
-                            <textarea name="deskripsi" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">${cls.deskripsi}</textarea>
+                            <textarea name="deskripsi" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">${cls.deskripsi || ''}</textarea>
                         </div>
                         <div class="flex justify-end space-x-2 pt-4">
                             <button type="button" onclick="UI.hideModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Batal</button>
@@ -1448,26 +1487,63 @@
                 `;
                 UI.showModal('Edit Kelas', content);
                 
-                document.getElementById('editClassForm').addEventListener('submit', (e) => {
+                document.getElementById('editClassForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const formData = new FormData(e.target);
-                    const classData = Object.fromEntries(formData);
+                    const form = e.target;
+                    const submitButton = form.querySelector('button[type="submit"]');
+                    submitButton.disabled = true;
+                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupdate...';
                     
-                    const index = AppState.classes.findIndex(c => c.id == classData.id);
-                    if (index !== -1) {
-                        AppState.classes[index] = { ...AppState.classes[index], ...classData };
+                    try {
+                        const formData = new FormData(form);
+                        const classData = Object.fromEntries(formData);
+                        
+                        await callGoogleScript('GET', { 
+                            action: 'updateClass', 
+                            id: classData.id,
+                            data: classData 
+                        });
+                        
+                        await fetchClassesFromGoogleScript();
+                        
                         UI.hideModal();
                         UI.showClassManagement();
-                        UI.showNotification('Kelas berhasil diupdate!', 'success');
+                        UI.showNotification('Kelas berhasil diupdate ke Google Sheets!', 'success');
+                    } catch (error) {
+                        console.error('Error updating class:', error);
+                        UI.showNotification('Gagal mengupdate kelas: ' + error.message, 'error');
+                    } finally {
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = 'Update';
                     }
                 });
             },
 
             deleteClass(id) {
-                UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus kelas ini?', () => {
-                    AppState.classes = AppState.classes.filter(c => c.id != id);
-                    UI.showClassManagement();
-                    UI.showNotification('Kelas berhasil dihapus!', 'success');
+                UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus kelas ini?', async () => {
+                    Swal.fire({
+                        title: 'Menghapus...',
+                        text: 'Sedang menghapus kelas dari Google Sheets.',
+                        allowOutsideClick: false,
+                        didOpen: () => { Swal.showLoading(); }
+                    });
+                    
+                    try {
+                        await callGoogleScript('GET', { 
+                            action: 'deleteClass', 
+                            id: id 
+                        });
+                        
+                        await fetchClassesFromGoogleScript();
+                        
+                        Swal.close();
+                        UI.showClassManagement();
+                        UI.showNotification('Kelas berhasil dihapus dari Google Sheets!', 'success');
+                    } catch (error) {
+                        Swal.close();
+                        console.error('Error deleting class:', error);
+                        UI.showNotification('Gagal menghapus kelas: ' + error.message, 'error');
+                    }
                 });
             },
 
@@ -1490,24 +1566,43 @@
                 `;
                 UI.showModal('Tambah Mata Pelajaran', content);
                 
-                document.getElementById('addSubjectForm').addEventListener('submit', (e) => {
+                document.getElementById('addSubjectForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const formData = new FormData(e.target);
-                    const subjectData = Object.fromEntries(formData);
+                    const form = e.target;
+                    const submitButton = form.querySelector('button[type="submit"]');
+                    submitButton.disabled = true;
+                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Menyimpan...';
                     
-                    AppState.subjects.push({
-                        id: this.generateId(),
-                        ...subjectData
-                    });
-                    
-                    UI.hideModal();
-                    UI.showSubjectManagement();
-                    UI.showNotification('Mata pelajaran berhasil ditambahkan!', 'success');
+                    try {
+                        const formData = new FormData(form);
+                        const subjectData = Object.fromEntries(formData);
+                        
+                        await callGoogleScript('GET', { 
+                            action: 'addSubject', 
+                            data: subjectData 
+                        });
+                        
+                        await fetchSubjectsFromGoogleScript();
+                        
+                        UI.hideModal();
+                        UI.showSubjectManagement();
+                        UI.showNotification('Mata pelajaran berhasil ditambahkan ke Google Sheets!', 'success');
+                    } catch (error) {
+                        console.error('Error adding subject:', error);
+                        UI.showNotification('Gagal menambahkan mata pelajaran: ' + error.message, 'error');
+                    } finally {
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = 'Simpan';
+                    }
                 });
             },
 
             editSubject(id) {
                 const subject = AppState.subjects.find(s => s.id == id);
+                if (!subject) {
+                    UI.showNotification('Mata pelajaran tidak ditemukan!', 'error');
+                    return;
+                }
                 const content = `
                     <form id="editSubjectForm" class="space-y-4">
                         <input type="hidden" name="id" value="${subject.id}">
@@ -1517,7 +1612,7 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Deskripsi</label>
-                            <textarea name="deskripsi" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">${subject.deskripsi}</textarea>
+                            <textarea name="deskripsi" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">${subject.deskripsi || ''}</textarea>
                         </div>
                         <div class="flex justify-end space-x-2 pt-4">
                             <button type="button" onclick="UI.hideModal()" class="px-4 py-2 text-gray-600 hover:text-gray-800">Batal</button>
@@ -1527,26 +1622,63 @@
                 `;
                 UI.showModal('Edit Mata Pelajaran', content);
                 
-                document.getElementById('editSubjectForm').addEventListener('submit', (e) => {
+                document.getElementById('editSubjectForm').addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const formData = new FormData(e.target);
-                    const subjectData = Object.fromEntries(formData);
+                    const form = e.target;
+                    const submitButton = form.querySelector('button[type="submit"]');
+                    submitButton.disabled = true;
+                    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupdate...';
                     
-                    const index = AppState.subjects.findIndex(s => s.id == subjectData.id);
-                    if (index !== -1) {
-                        AppState.subjects[index] = { ...AppState.subjects[index], ...subjectData };
+                    try {
+                        const formData = new FormData(form);
+                        const subjectData = Object.fromEntries(formData);
+                        
+                        await callGoogleScript('GET', { 
+                            action: 'updateSubject', 
+                            id: subjectData.id,
+                            data: subjectData 
+                        });
+                        
+                        await fetchSubjectsFromGoogleScript();
+                        
                         UI.hideModal();
                         UI.showSubjectManagement();
-                        UI.showNotification('Mata pelajaran berhasil diupdate!', 'success');
+                        UI.showNotification('Mata pelajaran berhasil diupdate ke Google Sheets!', 'success');
+                    } catch (error) {
+                        console.error('Error updating subject:', error);
+                        UI.showNotification('Gagal mengupdate mata pelajaran: ' + error.message, 'error');
+                    } finally {
+                        submitButton.disabled = false;
+                        submitButton.innerHTML = 'Update';
                     }
                 });
             },
 
             deleteSubject(id) {
-                UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus mata pelajaran ini?', () => {
-                    AppState.subjects = AppState.subjects.filter(s => s.id != id);
-                    UI.showSubjectManagement();
-                    UI.showNotification('Mata pelajaran berhasil dihapus!', 'success');
+                UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus mata pelajaran ini?', async () => {
+                    Swal.fire({
+                        title: 'Menghapus...',
+                        text: 'Sedang menghapus mata pelajaran dari Google Sheets.',
+                        allowOutsideClick: false,
+                        didOpen: () => { Swal.showLoading(); }
+                    });
+                    
+                    try {
+                        await callGoogleScript('GET', { 
+                            action: 'deleteSubject', 
+                            id: id 
+                        });
+                        
+                        await fetchSubjectsFromGoogleScript();
+                        
+                        Swal.close();
+                        UI.showSubjectManagement();
+                        UI.showNotification('Mata pelajaran berhasil dihapus dari Google Sheets!', 'success');
+                    } catch (error) {
+                        Swal.close();
+                        console.error('Error deleting subject:', error);
+                        UI.showNotification('Gagal menghapus mata pelajaran: ' + error.message, 'error');
+                    }
                 });
             },
 
@@ -4982,7 +5114,14 @@
             usernameInput.disabled = true;
             passwordInput.disabled = true;
 
-            const dataLoaded = await fetchUsersFromGoogleScript();
+            // Load all data from Google Sheets
+            const [usersLoaded, classesLoaded, subjectsLoaded] = await Promise.all([
+                fetchUsersFromGoogleScript(),
+                fetchClassesFromGoogleScript(),
+                fetchSubjectsFromGoogleScript()
+            ]);
+
+            const dataLoaded = usersLoaded;
 
             if (dataLoaded) {
                  // Restore login form state
