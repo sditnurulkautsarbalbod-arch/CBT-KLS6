@@ -833,41 +833,63 @@
         async function callGoogleScript(method = 'GET', params = {}) {
             const url = new URL(SCRIPT_URL);
             
-            if (method === 'GET') {
-                Object.keys(params).forEach(key => {
-                    if (params[key] || params[key] === 0) { // Also include params with value 0
+            // Untuk Google Apps Script, kita gunakan GET untuk semua request
+            // karena POST dengan no-cors tidak bisa membaca response
+            Object.keys(params).forEach(key => {
+                if (params[key] !== undefined && params[key] !== null) {
+                    // Jika value adalah object/array, stringify dulu
+                    if (typeof params[key] === 'object') {
+                        url.searchParams.append(key, JSON.stringify(params[key]));
+                    } else {
                         url.searchParams.append(key, params[key]);
                     }
-                });
+                }
+            });
 
-                try {
-                    const response = await fetch(url);
-                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                    return response.json();
-                } catch (error) {
-                    console.error('Error calling Google Script (GET):', error);
-                    UI.showNotification('Gagal terhubung ke Google Sheet.', 'error');
-                    throw error;
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const result = await response.json();
+                
+                // Sync ke IndexedDB jika sukses
+                if (result.status === 'success' && result.data) {
+                    const action = params.action;
+                    if (action === 'getUsers' && Array.isArray(result.data)) {
+                        await IndexedDB.syncFromServer('users', result.data);
+                    } else if (action === 'getQuestions' && Array.isArray(result.data)) {
+                        await IndexedDB.syncFromServer('questions', result.data);
+                    } else if (action === 'getResults' && Array.isArray(result.data)) {
+                        await IndexedDB.syncFromServer('results', result.data, 'resultId');
+                    } else if (action === 'getGrades' && Array.isArray(result.data)) {
+                        await IndexedDB.syncFromServer('grades', result.data);
+                    } else if (action === 'getSettings') {
+                        await IndexedDB.put('settings', { key: params.key || 'all', value: result.data, updatedAt: new Date().toISOString() });
+                    }
                 }
-            } else if (method === 'POST') {
-                try {
-                    // Using 'fetch' with 'no-cors' for simple POST requests to Google Apps Script
-                    // This is a common pattern as it avoids complex CORS preflight issues.
-                    // The downside is we cannot read the response body, but we can assume success if the request doesn't throw an error.
-                    await fetch(SCRIPT_URL, {
-                        method: 'POST',
-                        mode: 'no-cors', 
-                        headers: { 'Content-Type': 'text/plain;charset=utf-8', }, // Use text/plain for no-cors
-                        body: JSON.stringify(params),
-                        redirect: 'follow'
-                    });
-                    // With 'no-cors', we optimistically assume success.
-                    return { status: 'success', message: 'Data sent successfully.' };
-                } catch (error) {
-                    console.error('Error calling Google Script (POST):', error);
-                    UI.showNotification('Gagal mengirim data ke Google Sheet.', 'error');
-                    throw error;
+                
+                return result;
+            } catch (error) {
+                console.error('Error calling Google Script:', error);
+                
+                // Fallback ke IndexedDB jika offline
+                if (!navigator.onLine) {
+                    console.log('Offline - trying IndexedDB fallback');
+                    const action = params.action;
+                    
+                    if (action === 'getUsers') {
+                        const cached = await IndexedDB.getAll('users');
+                        if (cached.length > 0) return { status: 'success', data: cached };
+                    } else if (action === 'getQuestions') {
+                        const cached = await IndexedDB.getAll('questions');
+                        if (cached.length > 0) return { status: 'success', data: cached };
+                    } else if (action === 'getSettings') {
+                        const cached = await IndexedDB.get('settings', params.key || 'all');
+                        if (cached) return { status: 'success', data: cached.value };
+                    }
                 }
+                
+                UI.showNotification('Gagal terhubung ke Google Sheet.', 'error');
+                throw error;
             }
         }
         
@@ -1217,7 +1239,7 @@
                 UI.showConfirmModal('Konfirmasi Buka Blokir', 'Anda yakin ingin membuka blokir siswa ini?', async () => {
                     try {
                         // Google Apps Script Integration
-                        await callGoogleScript('POST', { 
+                        await callGoogleScript('GET', { 
                             action: 'unblockStudent', 
                             data: { id: docId } 
                         });
@@ -1240,7 +1262,7 @@
                     });
                     try {
                         // Google Apps Script Integration
-                        await callGoogleScript('POST', { action: 'unblockAllStudents' });
+                        await callGoogleScript('GET', { action: 'unblockAllStudents' });
                         Swal.close();
                         UI.showNotification('Semua blokir siswa berhasil dibuka!', 'success');
                         UI.renderBlockedStudents(); // Refresh the view
@@ -1397,7 +1419,7 @@
                         }
                         delete questionData.gambarFile;
 
-                        await callGoogleScript('POST', { action: 'addQuestion', data: questionData });
+                        await callGoogleScript('GET', { action: 'addQuestion', data: questionData });
 
                         AppState.cache.clear(); 
                         AppState.lastQuestionData = {
@@ -1643,7 +1665,7 @@
                         }
                         delete questionData.gambarFile;
 
-                        await callGoogleScript('POST', { action: 'updateQuestion', data: questionData });
+                        await callGoogleScript('GET', { action: 'updateQuestion', data: questionData });
 
                         AppState.cache.clear(); 
                         UI.hideModal();
@@ -1663,7 +1685,7 @@
                 // ... same as provided file ...
                 UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus soal ini?', async () => {
                     try {
-                        await callGoogleScript('POST', { action: 'deleteQuestion', data: { id: id } });
+                        await callGoogleScript('GET', { action: 'deleteQuestion', data: { id: id } });
                         AppState.cache.clear();
                         UI.showNotification('Soal berhasil dihapus!', 'success');
                         document.getElementById('applyFilterBtn').click();
@@ -1887,7 +1909,7 @@
                     }));
 
                     try {
-                        await callGoogleScript('POST', { action: 'addQuestionsBatch', data: questionsToSave });
+                        await callGoogleScript('GET', { action: 'addQuestionsBatch', data: questionsToSave });
                         
                         AppState.cache.clear(); 
                         UI.hideGeminiModal();
@@ -1998,7 +2020,7 @@
                     const newStatus = newNilai > 0 ? 'benar' : 'salah';
                     
                     try {
-                        await callGoogleScript('POST', {
+                        await callGoogleScript('GET', {
                             action: 'updateResult',
                             data: {
                                 resultId: resultId,
@@ -2026,7 +2048,7 @@
                  // ... same as input ...
                 UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus detail hasil ini dari Google Sheet?', async () => {
                     try {
-                        await callGoogleScript('POST', { action: 'deleteResult', data: { resultId: id } });
+                        await callGoogleScript('GET', { action: 'deleteResult', data: { resultId: id } });
                         AppState.cache.clear(); 
                         UI.showNotification('Hasil ujian berhasil dihapus!', 'success');
                         document.getElementById('applyResultFilterBtn').click(); 
@@ -2127,7 +2149,7 @@
 
                     if (gradeResult.status === 'success' && gradeResult.data && gradeResult.data.length > 0) {
                         const gradeDoc = gradeResult.data[0];
-                        await callGoogleScript('POST', {
+                        await callGoogleScript('GET', {
                             action: 'updateGrade',
                             data: {
                                 id: gradeDoc.id,
@@ -2206,7 +2228,7 @@
                         const newKeterangan = newNilai >= 70 ? 'Lulus' : 'Tidak Lulus';
 
                         try {
-                            await callGoogleScript('POST', {
+                            await callGoogleScript('GET', {
                                 action: 'updateGrade',
                                 data: {
                                     id: id,
@@ -2231,7 +2253,7 @@
             deleteGrade(id) {
                 UI.showConfirmModal('Konfirmasi Hapus', 'Apakah Anda yakin ingin menghapus data nilai ini?', async () => {
                     try {
-                        await callGoogleScript('POST', {
+                        await callGoogleScript('GET', {
                             action: 'deleteGrade',
                             data: { id: id }
                         });
@@ -2455,7 +2477,7 @@
                     async () => {
                         const idsToDelete = questionsToDelete.map(q => q.id);
                         try {
-                            await callGoogleScript('POST', { action: 'deleteQuestionsBatch', data: { ids: idsToDelete } });
+                            await callGoogleScript('GET', { action: 'deleteQuestionsBatch', data: { ids: idsToDelete } });
                             AppState.cache.clear(); 
                             UI.showNotification('Soal yang Anda pilih berhasil dihapus!', 'success');
                             document.getElementById('applyFilterBtn').click();
@@ -2491,7 +2513,7 @@
                     async () => {
                         const resultIds = resultsToDelete.map(r => r.resultId);
                         try {
-                            await callGoogleScript('POST', { action: 'deleteResults', data: { resultIds: resultIds } });
+                            await callGoogleScript('GET', { action: 'deleteResults', data: { resultIds: resultIds } });
                             AppState.cache.clear(); 
                             UI.showNotification('Hasil ujian yang difilter berhasil dihapus!', 'success');
                             document.getElementById('applyResultFilterBtn').click(); 
@@ -2526,7 +2548,7 @@
                         try {
                             // Google Apps Script Integration: Delete grades
                             const idsToDelete = gradesToDelete.map(g => g.id);
-                            await callGoogleScript('POST', { 
+                            await callGoogleScript('GET', { 
                                 action: 'deleteGradesBatch', 
                                 data: { ids: idsToDelete } 
                             });
@@ -3201,19 +3223,39 @@
             },
             
             async showSettings() {
-                // Google Apps Script Integration for Settings
+                // Google Apps Script Integration for Settings with IndexedDB Cache
                 const content = document.getElementById('dashboardContent');
                 content.innerHTML = `<div class="text-center p-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-600"></i></div>`;
 
                 let currentDuration = 60; // Default duration in minutes
+                
                 try {
-                    const settingsResult = await callGoogleScript('GET', { action: 'getSettings', key: 'examConfig' });
-                    if (settingsResult.status === 'success' && settingsResult.data && settingsResult.data.durationMinutes) {
-                        currentDuration = settingsResult.data.durationMinutes;
+                    // Try IndexedDB cache first
+                    const cachedSettings = await IndexedDB.get('settings', 'examConfig');
+                    if (cachedSettings && cachedSettings.value && cachedSettings.value.durationMinutes) {
+                        currentDuration = cachedSettings.value.durationMinutes;
+                        console.log('Settings loaded from IndexedDB cache');
+                    }
+                    
+                    // Fetch from server in background to update cache (if online)
+                    if (navigator.onLine) {
+                        const settingsResult = await callGoogleScript('GET', { action: 'getSettings', key: 'examConfig' });
+                        if (settingsResult.status === 'success' && settingsResult.data && settingsResult.data.durationMinutes) {
+                            currentDuration = settingsResult.data.durationMinutes;
+                            // Cache sudah diupdate di callGoogleScript
+                        }
                     }
                 } catch (error) {
                     console.error("Could not load exam settings:", error);
-                    UI.showNotification('Gagal memuat pengaturan. Menggunakan nilai default.', 'error');
+                    // Gunakan cache jika ada error
+                    try {
+                        const cachedSettings = await IndexedDB.get('settings', 'examConfig');
+                        if (cachedSettings && cachedSettings.value) {
+                            currentDuration = cachedSettings.value.durationMinutes || 60;
+                        }
+                    } catch (e) {
+                        console.warn('Cache also failed:', e);
+                    }
                 }
 
                 const currentApiKey = localStorage.getItem('geminiApiKey') || '';
@@ -3268,10 +3310,17 @@
 
                     try {
                         // Save duration to Google Apps Script (Shared setting)
-                        await callGoogleScript('POST', {
+                        await callGoogleScript('GET', {
                             action: 'saveSettings',
                             key: 'examConfig',
-                            data: { durationMinutes: newDuration }
+                            data: JSON.stringify({ durationMinutes: newDuration })
+                        });
+                        
+                        // Update IndexedDB cache
+                        await IndexedDB.put('settings', { 
+                            key: 'examConfig', 
+                            value: { durationMinutes: newDuration },
+                            updatedAt: new Date().toISOString()
                         });
 
                         // Save API Key to localStorage (Private setting per browser)
@@ -4193,7 +4242,7 @@
                         return result;
                     });
                     
-                    await callGoogleScript('POST', {
+                    await callGoogleScript('GET', {
                         action: 'addResults',
                         data: preparedResults
                     });
@@ -4202,7 +4251,7 @@
                     const grade = finalScore >= 90 ? 'A' : finalScore >= 80 ? 'B' : finalScore >= 70 ? 'C' : finalScore >= 60 ? 'D' : 'E';
                     
                     // Google Apps Script Integration: Add grade
-                    await callGoogleScript('POST', {
+                    await callGoogleScript('GET', {
                         action: 'addGrade',
                         data: {
                             kelas: AppState.currentUser.kelas,
@@ -4509,7 +4558,7 @@
 
                 // Record the block in Google Apps Script
                 const docId = `${AppState.currentUser.username}_${AppState.selectedExamCode}`;
-                await callGoogleScript('POST', {
+                await callGoogleScript('GET', {
                     action: 'blockStudent',
                     data: {
                         id: docId,
