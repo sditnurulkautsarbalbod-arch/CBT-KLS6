@@ -1843,11 +1843,34 @@
                         
                         questionData.createdBy = AppState.currentUser.nama;
                         
+                        // Upload gambar ke Google Drive jika ada
                         const fileInput = document.getElementById('gambarInput');
                         if (fileInput.files[0]) {
-                            questionData.gambar = await UI.toBase64(fileInput.files[0]);
+                            const file = fileInput.files[0];
+                            const base64Data = await UI.toBase64(file);
+                            
+                            // Upload ke Google Drive
+                            submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupload gambar...';
+                            const uploadResult = await callGoogleScript('GET', {
+                                action: 'uploadImage',
+                                data: JSON.stringify({
+                                    fileName: `soal_${Date.now()}_${file.name}`,
+                                    mimeType: file.type,
+                                    base64Data: base64Data
+                                })
+                            });
+                            
+                            if (uploadResult.success) {
+                                questionData.gambar = uploadResult.fileUrl;
+                                questionData.gambarFileId = uploadResult.fileId;
+                                questionData.gambarThumbnail = uploadResult.thumbnailUrl;
+                            } else {
+                                throw new Error('Gagal mengupload gambar: ' + (uploadResult.error || 'Unknown error'));
+                            }
                         } else {
                             questionData.gambar = null;
+                            questionData.gambarFileId = null;
+                            questionData.gambarThumbnail = null;
                         }
 
                         if (questionData.tipe === 'pilihan_ganda') {
@@ -2089,11 +2112,44 @@
                         questionData.createdBy = question.createdBy || AppState.currentUser.nama;
                         questionData.createdAt = question.createdAt;
                         
+                        // Upload gambar baru ke Google Drive jika ada
                         const fileInput = document.getElementById('editGambarInput');
                         if (fileInput.files[0]) {
-                            questionData.gambar = await UI.toBase64(fileInput.files[0]);
+                            const file = fileInput.files[0];
+                            const base64Data = await UI.toBase64(file);
+                            
+                            // Upload ke Google Drive
+                            submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupload gambar...';
+                            const uploadResult = await callGoogleScript('GET', {
+                                action: 'uploadImage',
+                                data: JSON.stringify({
+                                    fileName: `soal_${Date.now()}_${file.name}`,
+                                    mimeType: file.type,
+                                    base64Data: base64Data
+                                })
+                            });
+                            
+                            if (uploadResult.success) {
+                                // Hapus gambar lama jika ada
+                                if (question.gambarFileId) {
+                                    try {
+                                        await callGoogleScript('GET', { action: 'deleteImage', fileId: question.gambarFileId });
+                                    } catch (e) {
+                                        console.warn('Failed to delete old image:', e);
+                                    }
+                                }
+                                
+                                questionData.gambar = uploadResult.fileUrl;
+                                questionData.gambarFileId = uploadResult.fileId;
+                                questionData.gambarThumbnail = uploadResult.thumbnailUrl;
+                            } else {
+                                throw new Error('Gagal mengupload gambar: ' + (uploadResult.error || 'Unknown error'));
+                            }
                         } else {
-                            questionData.gambar = question.gambar; // Keep old image
+                            // Keep old image data
+                            questionData.gambar = question.gambar;
+                            questionData.gambarFileId = question.gambarFileId;
+                            questionData.gambarThumbnail = question.gambarThumbnail;
                         }
                         
                         if (questionData.tipe === 'pilihan_ganda') {
