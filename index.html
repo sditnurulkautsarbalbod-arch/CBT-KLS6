@@ -5170,14 +5170,25 @@
             usernameInput.disabled = true;
             passwordInput.disabled = true;
 
-            // Load all data from Google Sheets
-            const [usersLoaded, classesLoaded, subjectsLoaded] = await Promise.all([
-                fetchUsersFromGoogleScript(),
-                fetchClassesFromGoogleScript(),
-                fetchSubjectsFromGoogleScript()
-            ]);
-
-            const dataLoaded = usersLoaded;
+            // Load all data from Google Sheets SEQUENTIALLY to avoid race condition
+            // Google Apps Script has limitations on concurrent requests
+            let dataLoaded = false;
+            
+            try {
+                // Load users first (most important)
+                const usersLoaded = await fetchUsersFromGoogleScript();
+                
+                // Then load classes
+                await fetchClassesFromGoogleScript();
+                
+                // Then load subjects
+                await fetchSubjectsFromGoogleScript();
+                
+                dataLoaded = usersLoaded;
+            } catch (error) {
+                console.error('Error loading initial data:', error);
+                dataLoaded = false;
+            }
 
             if (dataLoaded) {
                  // Restore login form state
