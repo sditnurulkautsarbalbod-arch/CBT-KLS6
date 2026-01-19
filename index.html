@@ -875,6 +875,51 @@
             }
         }
         
+        // Upload gambar ke Google Drive dengan chunked upload
+        async function uploadImageToGoogleDrive(base64Data, fileName) {
+            const CHUNK_SIZE = 30000; // 30KB per chunk (safe for URL length)
+            const chunks = [];
+            
+            // Remove data:image/...;base64, prefix if exists
+            const base64Clean = base64Data.includes(',') ? base64Data.split(',')[1] : base64Data;
+            
+            // Split into chunks
+            for (let i = 0; i < base64Clean.length; i += CHUNK_SIZE) {
+                chunks.push(base64Clean.substring(i, i + CHUNK_SIZE));
+            }
+            
+            const uploadId = `upload_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            
+            try {
+                // Upload each chunk
+                for (let i = 0; i < chunks.length; i++) {
+                    const isLast = i === chunks.length - 1;
+                    
+                    await callGoogleScript('GET', {
+                        action: 'uploadImageChunk',
+                        uploadId: uploadId,
+                        chunkIndex: i,
+                        totalChunks: chunks.length,
+                        chunk: chunks[i],
+                        fileName: fileName,
+                        isLast: isLast ? 'true' : 'false'
+                    });
+                }
+                
+                // Finalize upload and get the file URL
+                const result = await callGoogleScript('GET', {
+                    action: 'finalizeImageUpload',
+                    uploadId: uploadId,
+                    fileName: fileName
+                });
+                
+                return result;
+            } catch (error) {
+                console.error('Error uploading image:', error);
+                return { success: false, error: error.message };
+            }
+        }
+        
         // =================================================================
         // DATA FETCHING
         // =================================================================
@@ -1927,18 +1972,14 @@
                         const fileInput = document.getElementById('gambarInput');
                         if (fileInput.files[0]) {
                             const file = fileInput.files[0];
-                            const base64Data = await UI.toBase64(file);
+                            
+                            // Compress dan resize gambar sebelum upload
+                            submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengompresi gambar...';
+                            const compressedBase64 = await UI.compressImage(file, 800, 600, 0.7);
                             
                             // Upload ke Google Drive
                             submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupload gambar...';
-                            const uploadResult = await callGoogleScript('GET', {
-                                action: 'uploadImage',
-                                data: JSON.stringify({
-                                    fileName: `soal_${Date.now()}_${file.name}`,
-                                    mimeType: file.type,
-                                    base64Data: base64Data
-                                })
-                            });
+                            const uploadResult = await uploadImageToGoogleDrive(compressedBase64, `soal_${Date.now()}.jpg`);
                             
                             if (uploadResult.success) {
                                 questionData.gambar = uploadResult.fileUrl;
@@ -2196,18 +2237,14 @@
                         const fileInput = document.getElementById('editGambarInput');
                         if (fileInput.files[0]) {
                             const file = fileInput.files[0];
-                            const base64Data = await UI.toBase64(file);
                             
-                            // Upload ke Google Drive
+                            // Compress dan resize gambar sebelum upload
+                            submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengompresi gambar...';
+                            const compressedBase64 = await UI.compressImage(file, 800, 600, 0.7);
+                            
+                            // Upload ke Google Drive dengan chunked upload
                             submitButton.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Mengupload gambar...';
-                            const uploadResult = await callGoogleScript('GET', {
-                                action: 'uploadImage',
-                                data: JSON.stringify({
-                                    fileName: `soal_${Date.now()}_${file.name}`,
-                                    mimeType: file.type,
-                                    base64Data: base64Data
-                                })
-                            });
+                            const uploadResult = await uploadImageToGoogleDrive(compressedBase64, `soal_${Date.now()}.jpg`);
                             
                             if (uploadResult.success) {
                                 // Hapus gambar lama jika ada
@@ -3507,6 +3544,44 @@
                 reader.onload = () => resolve(reader.result);
                 reader.onerror = error => reject(error);
             }),
+            
+            // Compress dan resize gambar
+            compressImage: (file, maxWidth = 800, maxHeight = 600, quality = 0.7) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let width = img.width;
+                        let height = img.height;
+                        
+                        // Resize jika lebih besar dari max
+                        if (width > maxWidth) {
+                            height = (height * maxWidth) / width;
+                            width = maxWidth;
+                        }
+                        if (height > maxHeight) {
+                            width = (width * maxHeight) / height;
+                            height = maxHeight;
+                        }
+                        
+                        canvas.width = width;
+                        canvas.height = height;
+                        
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
+                        
+                        // Convert ke JPEG dengan kompresi
+                        const compressedBase64 = canvas.toDataURL('image/jpeg', quality);
+                        resolve(compressedBase64);
+                    };
+                    img.onerror = reject;
+                    img.src = e.target.result;
+                };
+                reader.onerror = reject;
+            }),
+            
             showModal(title, content) {
                 document.getElementById('modalTitle').textContent = title;
                 document.getElementById('modalContent').innerHTML = content;

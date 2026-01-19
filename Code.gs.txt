@@ -168,6 +168,22 @@ function handleRequest(e) {
       case 'uploadImage':
         result = uploadImage(JSON.parse(e.parameter.data));
         break;
+      case 'uploadImageChunk':
+        result = uploadImageChunk(
+          e.parameter.uploadId,
+          parseInt(e.parameter.chunkIndex),
+          parseInt(e.parameter.totalChunks),
+          e.parameter.chunk,
+          e.parameter.fileName,
+          e.parameter.isLast === 'true'
+        );
+        break;
+      case 'finalizeImageUpload':
+        result = finalizeImageUpload(e.parameter.uploadId, e.parameter.fileName);
+        break;
+      case 'deleteImage':
+        result = deleteImage(e.parameter.fileId);
+        break;
       case 'uploadMultipleImages':
         result = uploadMultipleImages(JSON.parse(e.parameter.data));
         break;
@@ -1035,6 +1051,108 @@ function deleteImage(fileId) {
     return { status: 'success', message: 'Image deleted successfully' };
   } catch (error) {
     return { status: 'error', error: error.toString() };
+  }
+}
+
+// Storage untuk chunked uploads (menggunakan Cache Service)
+const imageChunksCache = CacheService.getScriptCache();
+
+/**
+ * Upload image chunk
+ * @param {string} uploadId - Unique upload session ID
+ * @param {number} chunkIndex - Current chunk index
+ * @param {number} totalChunks - Total number of chunks
+ * @param {string} chunk - Base64 chunk data
+ * @param {string} fileName - File name
+ * @param {boolean} isLast - Is this the last chunk
+ */
+function uploadImageChunk(uploadId, chunkIndex, totalChunks, chunk, fileName, isLast) {
+  try {
+    // Store chunk in cache (6 hour expiration)
+    const cacheKey = `${uploadId}_chunk_${chunkIndex}`;
+    imageChunksCache.put(cacheKey, chunk, 21600);
+    
+    // Store metadata
+    const metaKey = `${uploadId}_meta`;
+    const meta = {
+      totalChunks: totalChunks,
+      fileName: fileName,
+      receivedChunks: chunkIndex + 1
+    };
+    imageChunksCache.put(metaKey, JSON.stringify(meta), 21600);
+    
+    return { 
+      success: true, 
+      chunkIndex: chunkIndex,
+      received: chunkIndex + 1,
+      total: totalChunks
+    };
+  } catch (error) {
+    return { success: false, error: error.toString() };
+  }
+}
+
+/**
+ * Finalize chunked image upload - combine chunks and save to Drive
+ * @param {string} uploadId - Unique upload session ID
+ * @param {string} fileName - File name
+ */
+function finalizeImageUpload(uploadId, fileName) {
+  try {
+    // Get metadata
+    const metaKey = `${uploadId}_meta`;
+    const metaStr = imageChunksCache.get(metaKey);
+    
+    if (!metaStr) {
+      return { success: false, error: 'Upload session not found or expired' };
+    }
+    
+    const meta = JSON.parse(metaStr);
+    const totalChunks = meta.totalChunks;
+    
+    // Combine all chunks
+    let fullBase64 = '';
+    for (let i = 0; i < totalChunks; i++) {
+      const cacheKey = `${uploadId}_chunk_${i}`;
+      const chunk = imageChunksCache.get(cacheKey);
+      
+      if (!chunk) {
+        return { success: false, error: `Missing chunk ${i}` };
+      }
+      
+      fullBase64 += chunk;
+      
+      // Clear chunk from cache
+      imageChunksCache.remove(cacheKey);
+    }
+    
+    // Clear metadata
+    imageChunksCache.remove(metaKey);
+    
+    // Create file from combined base64
+    const folder = getImageFolder();
+    const blob = Utilities.newBlob(
+      Utilities.base64Decode(fullBase64),
+      'image/jpeg',
+      fileName
+    );
+    
+    const file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    const fileId = file.getId();
+    const fileUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
+    const thumbnailUrl = `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+    
+    return { 
+      success: true, 
+      fileId: fileId,
+      fileUrl: fileUrl,
+      thumbnailUrl: thumbnailUrl,
+      fileName: fileName
+    };
+  } catch (error) {
+    return { success: false, error: error.toString() };
   }
 }
 
