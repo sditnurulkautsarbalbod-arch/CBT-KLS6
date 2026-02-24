@@ -888,10 +888,29 @@
                 
                 // Sync immediately if online (dengan await untuk memastikan terkirim)
                 if (navigator.onLine) {
-                    await this.processSyncQueue();
+                    try {
+                        await this.processSyncQueue();
+                        
+                        // Check if this specific operation succeeded
+                        const updatedQueue = await IndexedDBService.getAll('syncQueue');
+                        const thisOp = updatedQueue.find(op => op.id === operation.id);
+                        
+                        if (thisOp) {
+                            if (thisOp.status === 'completed') {
+                                return { status: 'success', message: 'Data berhasil disinkronkan ke server' };
+                            } else if (thisOp.status === 'failed') {
+                                return { status: 'error', message: thisOp.lastError || 'Gagal menyinkronkan data ke server' };
+                            }
+                        }
+                        return { status: 'success', message: 'Data disimpan ke queue sync' };
+                    } catch (error) {
+                        console.error('Queue operation error:', error);
+                        return { status: 'error', message: error.message || 'Gagal menyinkronkan data' };
+                    }
+                } else {
+                    // Offline - data akan disinkronkan nanti
+                    return { status: 'offline', message: 'Mode offline. Data akan disinkronkan saat koneksi tersedia.' };
                 }
-                
-                return operation;
             },
             
             // Process pending sync queue
@@ -1305,40 +1324,88 @@
             },
             
             async addQuestion(questionData) {
+                // 1. Validasi input
+                if (!questionData || typeof questionData !== 'object') {
+                    return { success: false, message: 'Data soal tidak valid' };
+                }
+                
                 const tempId = questionData.id || `q-${Date.now()}`;
                 const newQuestion = { ...questionData, id: tempId };
                 
-                // 1. Optimistic update
+                // 2. Optimistic update
                 const cached = CacheHelper.getCached('questions') || [];
                 cached.push(newQuestion);
                 AppState.cache.set('questions', { data: cached, timestamp: Date.now(), valid: true });
                 
-                // 2. Save to IndexedDB
+                // 3. Save to IndexedDB
                 await IndexedDBService.put('questions', newQuestion);
                 
-                // 3. Enqueue for background sync
-                await BackgroundSync.queueOperation('add', 'questions', newQuestion);
+                // 4. Enqueue for background sync
+                const syncResult = await BackgroundSync.queueOperation('add', 'questions', newQuestion);
                 
-                return { success: true, message: 'Soal berhasil ditambahkan' };
+                // 5. Validasi sync result
+                if (syncResult && syncResult.status === 'error') {
+                    return { 
+                        success: false, 
+                        message: `Gagal menyimpan ke server: ${syncResult.message}. Data disimpan secara lokal.`,
+                        localOnly: true
+                    };
+                }
+                
+                // 6. Force refresh dari server untuk sinkronisasi
+                try {
+                    await DataService.getQuestions(null, true);
+                } catch (e) {
+                    console.warn('Force refresh failed after addQuestion:', e);
+                }
+                
+                return { success: true, message: 'Soal berhasil ditambahkan dan disinkronkan' };
             },
             
             async addQuestions(questionsArray) {
-                // 1. Optimistic update
+                // 1. Validasi input
+                if (!questionsArray || !Array.isArray(questionsArray) || questionsArray.length === 0) {
+                    return { success: false, message: 'Data soal tidak valid' };
+                }
+                
+                // 2. Optimistic update
                 const cached = CacheHelper.getCached('questions') || [];
                 const newQuestions = questionsArray.map((q, i) => ({ ...q, id: q.id || `q-${Date.now()}-${i}` }));
                 cached.push(...newQuestions);
                 AppState.cache.set('questions', { data: cached, timestamp: Date.now(), valid: true });
                 
-                // 2. Save to IndexedDB
+                // 3. Save to IndexedDB
                 await IndexedDBService.putBulk('questions', newQuestions);
                 
-                // 3. Enqueue as batch - use special action name for GAS compatibility
-                await BackgroundSync.queueOperation('addQuestionsBatch', 'questions', newQuestions);
+                // 4. Enqueue as batch - use special action name for GAS compatibility
+                const syncResult = await BackgroundSync.queueOperation('addQuestionsBatch', 'questions', newQuestions);
                 
-                return { success: true, message: `${newQuestions.length} soal berhasil ditambahkan` };
+                // 5. Validasi: Cek apakah sync berhasil
+                if (syncResult && syncResult.status === 'error') {
+                    console.error('Sync failed for questions:', syncResult.message);
+                    return { 
+                        success: false, 
+                        message: `Gagal menyimpan ke server: ${syncResult.message}. Data disimpan secara lokal, akan disinkronkan saat koneksi tersedia.`,
+                        localOnly: true
+                    };
+                }
+                
+                // 6. Force refresh dari server untuk memastikan sinkronisasi
+                try {
+                    await DataService.getQuestions(null, true);
+                } catch (e) {
+                    console.warn('Force refresh failed after addQuestions:', e);
+                }
+                
+                return { success: true, message: `${newQuestions.length} soal berhasil ditambahkan dan disinkronkan` };
             },
             
             async updateQuestion(questionData) {
+                // 1. Validasi input
+                if (!questionData || !questionData.id) {
+                    return { success: false, message: 'Data soal tidak valid' };
+                }
+                
                 const cached = CacheHelper.getCached('questions') || [];
                 const index = cached.findIndex(q => q.id === questionData.id);
                 let updatedQuestion = questionData;
@@ -1351,9 +1418,25 @@
                 }
                 
                 // Enqueue for background sync
-                await BackgroundSync.queueOperation('update', 'questions', updatedQuestion);
+                const syncResult = await BackgroundSync.queueOperation('update', 'questions', updatedQuestion);
                 
-                return { success: true, message: 'Soal berhasil diupdate' };
+                // Validasi sync result
+                if (syncResult && syncResult.status === 'error') {
+                    return { 
+                        success: false, 
+                        message: `Gagal menyinkronkan ke server: ${syncResult.message}`,
+                        localOnly: true
+                    };
+                }
+                
+                // Force refresh untuk sinkronisasi
+                try {
+                    await DataService.getQuestions(null, true);
+                } catch (e) {
+                    console.warn('Force refresh failed after updateQuestion:', e);
+                }
+                
+                return { success: true, message: 'Soal berhasil diupdate dan disinkronkan' };
             },
             
             async deleteQuestion(questionId) {
@@ -1365,7 +1448,14 @@
                 // Enqueue for background sync
                 await BackgroundSync.queueOperation('delete', 'questions', { id: questionId });
                 
-                return { success: true, message: 'Soal berhasil dihapus' };
+                // Force refresh untuk sinkronisasi
+                try {
+                    await DataService.getQuestions(null, true);
+                } catch (e) {
+                    console.warn('Force refresh failed after deleteQuestion:', e);
+                }
+                
+                return { success: true, message: 'Soal berhasil dihapus dan disinkronkan' };
             },
             
             async deleteQuestions(questionIds) {
@@ -1379,7 +1469,14 @@
                     await BackgroundSync.queueOperation('delete', 'questions', { id });
                 }
                 
-                return { success: true, message: `${questionIds.length} soal berhasil dihapus` };
+                // Force refresh untuk sinkronisasi
+                try {
+                    await DataService.getQuestions(null, true);
+                } catch (e) {
+                    console.warn('Force refresh failed after deleteQuestions:', e);
+                }
+                
+                return { success: true, message: `${questionIds.length} soal berhasil dihapus dan disinkronkan` };
             },
             
             // ============ RESULTS ============
@@ -2295,7 +2392,7 @@
             
             if (method === 'GET') {
                 Object.keys(params).forEach(key => {
-                    if (params[key] || params[key] === 0) { // Also include params with value 0
+                    if (params[key] || params[key] === 0) {
                         url.searchParams.append(key, params[key]);
                     }
                 });
@@ -2306,13 +2403,11 @@
                     return response.json();
                 } catch (error) {
                     console.error('Error calling Google Script (GET):', error);
-                    UI.showNotification('Gagal terhubung ke Google Sheet.', 'error');
-                    throw error;
+                    UI.showNotification('Gagal terhubung ke server. Periksa koneksi internet Anda.', 'error');
+                    return { status: 'error', message: error.message, error: error };
                 }
             } else if (method === 'POST') {
                 try {
-                    // Use fetch with redirect handling for Google Apps Script
-                    // GAS redirects to the actual response, so we need to follow redirects
                     const response = await fetch(SCRIPT_URL, {
                         method: 'POST',
                         headers: { 
@@ -2322,35 +2417,41 @@
                         redirect: 'follow'
                     });
                     
+                    // Check if response is ok
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
                     // Try to parse response as JSON
                     try {
                         const text = await response.text();
                         // GAS sometimes returns HTML wrapper, try to extract JSON
                         const jsonMatch = text.match(/\{[\s\S]*\}/);
                         if (jsonMatch) {
-                            return JSON.parse(jsonMatch[0]);
+                            const parsed = JSON.parse(jsonMatch[0]);
+                            // Check if GAS returned an error
+                            if (parsed.status === 'error' || parsed.error) {
+                                console.error('Google Script Error:', parsed.message || parsed.error);
+                                return { status: 'error', message: parsed.message || parsed.error, error: parsed };
+                            }
+                            return parsed;
                         }
                         return { status: 'success', message: 'Data sent successfully.' };
                     } catch (parseError) {
-                        // If we can't parse, assume success if request didn't throw
-                        console.log('[POST] Response received but not JSON, assuming success');
+                        console.log('[POST] Response received but not JSON:', parseError.message);
                         return { status: 'success', message: 'Data sent successfully.' };
                     }
                 } catch (error) {
                     console.error('Error calling Google Script (POST):', error);
-                    // If CORS error, try with no-cors mode as fallback
-                    if (error.message && error.message.includes('CORS')) {
-                        console.log('[POST] CORS error, trying no-cors mode...');
-                        await fetch(SCRIPT_URL, {
-                            method: 'POST',
-                            mode: 'no-cors',
-                            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                            body: JSON.stringify(params),
-                            redirect: 'follow'
-                        });
-                        return { status: 'success', message: 'Data sent (no-cors fallback).' };
+                    // Check specific error types
+                    if (error.message && error.message.includes('Failed to fetch')) {
+                        UI.showNotification('Gagal terhubung ke server. Periksa koneksi internet Anda.', 'error');
+                    } else if (error.message && error.message.includes('NetworkError')) {
+                        UI.showNotification('Network error. Periksa koneksi internet dan coba lagi.', 'error');
+                    } else {
+                        UI.showNotification(`Error: ${error.message}`, 'error');
                     }
-                    throw error;
+                    return { status: 'error', message: error.message, error: error };
                 }
             }
         }
