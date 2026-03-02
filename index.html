@@ -923,7 +923,10 @@
                     
                     for (const op of pendingOps) {
                         try {
-                            await this.executeOperation(op);
+                            const execResult = await this.executeOperation(op);
+                            if (!execResult || execResult.status !== 'success') {
+                                throw new Error(execResult?.message || 'Server tidak mengonfirmasi sinkronisasi.');
+                            }
                             op.status = 'completed';
                             await IndexedDBService.put('syncQueue', op);
                             console.log(`✅ Sync completed for ${op.action} - ${op.storeName}`);
@@ -974,6 +977,21 @@
                             if (storeName === 'blockedStudents') {
                                 return await callGoogleScript('POST', { action: 'blockStudent', data: data });
                             }
+                            // Special case: grades action name bisa berbeda antar versi GAS
+                            if (storeName === 'grades') {
+                                let addGradeResult = await callGoogleScript('POST', { action: 'addGrade', data: data });
+                                if (addGradeResult && addGradeResult.status === 'success') {
+                                    return addGradeResult;
+                                }
+
+                                const fallbackGradeResult = await callGoogleScript('POST', { action: 'addGrades', data: data });
+                                if (fallbackGradeResult && fallbackGradeResult.status === 'success') {
+                                    return fallbackGradeResult;
+                                }
+
+                                const finalGradeResult = fallbackGradeResult || addGradeResult;
+                                throw new Error(finalGradeResult?.message || 'Gagal menyimpan nilai ke server');
+                            }
                             return await callGoogleScript('POST', { action: `add${this.capitalize(storeName)}`, data: data });
                         case 'addBatch':
                             // Untuk results, GAS expects 'addResults' (plural), bukan 'addResult'
@@ -981,6 +999,9 @@
                                 return await callGoogleScript('POST', { action: 'addResults', data: data });
                             }
                             return await callGoogleScript('POST', { action: `add${this.capitalize(storeName)}`, data: data });
+                        case 'addResults':
+                            // Backward compatibility untuk queue legacy submitExam
+                            return await callGoogleScript('POST', { action: 'addResults', data: data });
                         case 'addQuestionsBatch':
                             // Special case: GAS expects 'addQuestionsBatch' action name
                             return await callGoogleScript('POST', { action: 'addQuestionsBatch', data: data });
@@ -1750,19 +1771,117 @@
                 return data;
             },
             
-            async addGrade(gradeData) {
-                const tempId = gradeData.id || `g-${Date.now()}`;
-                const newGrade = { ...gradeData, id: tempId };
-                
+            async addGradeDirect(gradeData, maxRetries = 5, retryDelay = 1500) {
+                if (!gradeData || typeof gradeData !== 'object') {
+                    return { success: false, message: 'Data nilai tidak valid' };
+                }
+
+                const tempId = gradeData.gradeId || gradeData.id || `g-${Date.now()}`;
+                const newGrade = {
+                    ...gradeData,
+                    gradeId: gradeData.gradeId || tempId,
+                    id: gradeData.id || tempId
+                };
+
                 const cached = CacheHelper.getCached('grades') || [];
-                cached.push(newGrade);
+                const existingIndex = cached.findIndex(g =>
+                    g.id === newGrade.id ||
+                    g.gradeId === newGrade.gradeId ||
+                    (g.namaSiswa === newGrade.namaSiswa && g.kodeSoal === newGrade.kodeSoal)
+                );
+
+                if (existingIndex !== -1) {
+                    cached[existingIndex] = { ...cached[existingIndex], ...newGrade };
+                } else {
+                    cached.push(newGrade);
+                }
+
                 AppState.cache.set('grades', { data: cached, timestamp: Date.now(), valid: true });
                 await IndexedDBService.put('grades', newGrade);
-                
-                // Enqueue for background sync
-                await BackgroundSync.queueOperation('add', 'grades', newGrade);
-                
-                return { success: true, message: 'Nilai berhasil ditambahkan' };
+
+                let lastError = '';
+                let sendSucceeded = false;
+
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    try {
+                        if (!sendSucceeded) {
+                            let result = await callGoogleScript('POST', {
+                                action: 'addGrade',
+                                data: newGrade
+                            });
+
+                            if (!result || result.status !== 'success') {
+                                const fallbackResult = await callGoogleScript('POST', {
+                                    action: 'addGrades',
+                                    data: newGrade
+                                });
+                                if (fallbackResult && fallbackResult.status === 'success') {
+                                    result = fallbackResult;
+                                }
+                            }
+
+                            if (result && result.status === 'success') {
+                                sendSucceeded = true;
+                            } else {
+                                lastError = result?.message || 'Gagal menyimpan nilai ke server';
+                            }
+                        }
+
+                        if (sendSucceeded) {
+                            const verifyById = await this.getGrades({ gradeId: newGrade.gradeId }, true);
+                            const foundById = Array.isArray(verifyById) && verifyById.some(g =>
+                                g.gradeId === newGrade.gradeId || g.id === newGrade.gradeId || g.id === newGrade.id
+                            );
+
+                            if (foundById) {
+                                return { success: true, message: 'Nilai berhasil ditambahkan ke Google Sheets' };
+                            }
+
+                            const verifyByIdentity = await this.getGrades({
+                                namaSiswa: newGrade.namaSiswa,
+                                kodeSoal: newGrade.kodeSoal,
+                                tahunAjaran: newGrade.tahunAjaran,
+                                semester: newGrade.semester
+                            }, true);
+
+                            const foundByIdentity = Array.isArray(verifyByIdentity) && verifyByIdentity.some(g =>
+                                g.namaSiswa === newGrade.namaSiswa && g.kodeSoal === newGrade.kodeSoal
+                            );
+
+                            if (foundByIdentity) {
+                                return { success: true, message: 'Nilai berhasil ditambahkan ke Google Sheets' };
+                            }
+
+                            lastError = 'Menunggu konfirmasi data nilai di Google Sheets.';
+                        }
+                    } catch (error) {
+                        lastError = error.message;
+                    }
+
+                    if (attempt < maxRetries) {
+                        await new Promise(resolve => setTimeout(resolve, retryDelay * Math.min(attempt, 4)));
+                    }
+                }
+
+                const queueResult = await BackgroundSync.queueOperation('add', 'grades', newGrade);
+
+                if (queueResult && queueResult.status === 'error') {
+                    return {
+                        success: false,
+                        localOnly: true,
+                        message: `Nilai disimpan lokal, gagal sinkron ke Google Sheets: ${queueResult.message || lastError}`
+                    };
+                }
+
+                return {
+                    success: false,
+                    localOnly: true,
+                    message: `Nilai disimpan lokal. Sinkronisasi tertunda: ${lastError || 'Server belum mengonfirmasi penyimpanan.'}`
+                };
+            },
+
+            async addGrade(gradeData) {
+                return await this.addGradeDirect(gradeData);
             },
             
             async updateGrade(gradeData) {
@@ -2659,10 +2778,18 @@
                             }
                             return parsed;
                         }
-                        return { status: 'success', message: 'Data sent successfully.' };
+                        return {
+                            status: 'error',
+                            message: 'Respons server tidak valid (non-JSON).',
+                            error: text
+                        };
                     } catch (parseError) {
                         console.log('[POST] Response received but not JSON:', parseError.message);
-                        return { status: 'success', message: 'Data sent successfully.' };
+                        return {
+                            status: 'error',
+                            message: `Gagal memproses respons server: ${parseError.message}`,
+                            error: parseError
+                        };
                     }
                 } catch (error) {
                     console.error('Error calling Google Script (POST):', error);
@@ -3255,107 +3382,30 @@
                         }
                         delete questionData.gambarFile;
 
-                        // ========== KIRIM WAJIB DENGAN VERIFIKASI ==========
-                        // Sama seperti submit exam - wajib terkirim & terverifikasi
-                        
-                        const maxAttempts = 10;
-                        const baseDelay = 1500;
-                        let attempt = 0;
-                        let isVerified = false;
-                        let lastError = '';
-                        
-                        // Generate unique ID untuk verifikasi
-                        const tempId = questionData.id || `q-${Date.now()}`;
-                        questionData.id = tempId;
-                        
-                        while (attempt < maxAttempts && !isVerified) {
-                            attempt++;
-                            
-                            // Update button text
-                            submitButton.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>Percobaan ${attempt}/${maxAttempts}...`;
-                            
-                            try {
-                                // KIRIM KE GOOGLE SHEETS
-                                const result = await callGoogleScript('POST', {
-                                    action: 'addQuestion',
-                                    data: questionData
-                                });
-                                
-                                if (result && result.status === 'success') {
-                                    // VERIFIKASI: Cek apakah data ada di Sheets
-                                    const verifyResult = await callGoogleScript('GET', {
-                                        action: 'getQuestions',
-                                        id: tempId
-                                    });
-                                    
-                                    if (verifyResult && verifyResult.status === 'success' && 
-                                        verifyResult.data && verifyResult.data.length > 0) {
-                                        console.log('✅ Question verified in Google Sheets!');
-                                        isVerified = true;
-                                        break;
-                                    } else {
-                                        lastError = 'Menunggu konfirmasi server...';
-                                        console.warn(`⚠️ Attempt ${attempt}: GAS success but verification failed`);
-                                    }
-                                } else {
-                                    lastError = result?.message || 'Server error';
-                                    console.warn(`⚠️ Attempt ${attempt} failed:`, lastError);
-                                }
-                            } catch (error) {
-                                lastError = error.message;
-                                console.error(`❌ Attempt ${attempt} error:`, error);
-                            }
-                            
-                            // Delay sebelum retry
-                            if (!isVerified && attempt < maxAttempts) {
-                                const delay = baseDelay * Math.min(attempt, 3);
-                                await new Promise(resolve => setTimeout(resolve, delay));
-                            }
-                        }
-                        
-                        if (isVerified) {
-                            // ✅ BERHASIL - Simpan ke IndexedDB juga untuk cache lokal
-                            await IndexedDBService.put('questions', questionData);
-                            
-                            const cached = CacheHelper.getCached('questions') || [];
-                            cached.push(questionData);
-                            AppState.cache.set('questions', { data: cached, timestamp: Date.now(), valid: true });
-                            
-                            AppState.cache.clear(); 
-                            AppState.lastQuestionData = {
-                                tahunAjaran: questionData.tahunAjaran,
-                                semester: questionData.semester,
-                                kode: questionData.kode,
-                                kelas: questionData.kelas,
-                                mataPelajaran: questionData.mataPelajaran,
-                                tipe: questionData.tipe
-                            };
-                            UI.hideModal();
+                        const saveResult = await DataService.addQuestionDirect(questionData);
+
+                        AppState.cache.clear();
+                        AppState.lastQuestionData = {
+                            tahunAjaran: questionData.tahunAjaran,
+                            semester: questionData.semester,
+                            kode: questionData.kode,
+                            kelas: questionData.kelas,
+                            mataPelajaran: questionData.mataPelajaran,
+                            tipe: questionData.tipe
+                        };
+                        UI.hideModal();
+
+                        if (saveResult && saveResult.success) {
                             UI.showNotification('✅ soal berhasil ditambahkan dan tersimpan di Google Sheets!', 'success');
                             UI.loadAndRenderPaginatedQuestions();
                         } else {
-                            // ❌ GAGAL - Simpan lokal sebagai backup
-                            await IndexedDBService.put('questions', questionData);
-                            
+                            const warningMessage = saveResult?.message || 'Soal disimpan secara lokal (belum terkirim)';
                             Swal.fire({
                                 title: '⚠️ Peringatan',
-                                html: `Soal disimpan di browser tetapi gagal dikirim ke Google Sheets setelah ${maxAttempts} percobaan.<br><br>
-                                       <small class="text-gray-500">${lastError}</small><br><br>
-                                       <strong>Soal akan otomatis dikirim saat koneksi membaik.</strong>`,
+                                html: `${warningMessage}<br><br><strong>Soal akan otomatis dikirim saat koneksi membaik.</strong>`,
                                 icon: 'warning',
                                 confirmButtonText: 'Simpan Lokal'
                             });
-                            
-                            AppState.cache.clear(); 
-                            AppState.lastQuestionData = {
-                                tahunAjaran: questionData.tahunAjaran,
-                                semester: questionData.semester,
-                                kode: questionData.kode,
-                                kelas: questionData.kelas,
-                                mataPelajaran: questionData.mataPelajaran,
-                                tipe: questionData.tipe
-                            };
-                            UI.hideModal();
                             UI.showNotification('Soal disimpan secara lokal (belum terkirim)', 'warning');
                             UI.loadAndRenderPaginatedQuestions();
                         }
@@ -3876,98 +3926,19 @@
                     }));
 
                     try {
-                        // ========== KIRIM WAJIB DENGAN VERIFIKASI (BATCH) ==========
-                        
-                        const maxAttempts = 8;
-                        const baseDelay = 2000;
-                        let attempt = 0;
-                        let isVerified = false;
-                        let lastError = '';
-                        
-                        // Update button
-                        button.disabled = true;
-                        button.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>Mengirim ke Google Sheets... (0/${questionsToSave.length})`;
-                        
-                        // Kirim per-soal dengan verifikasi
-                        const savedQuestions = [];
-                        const failedQuestions = [];
-                        
-                        for (let i = 0; i < questionsToSave.length; i++) {
-                            const q = questionsToSave[i];
-                            q.id = q.id || `q-${Date.now()}-${i}`;
-                            
-                            // Reset attempts untuk setiap soal
-                            attempt = 0;
-                            let qVerified = false;
-                            
-                            while (attempt < maxAttempts && !qVerified) {
-                                attempt++;
-                                
-                                try {
-                                    const result = await callGoogleScript('POST', {
-                                        action: 'addQuestion',
-                                        data: q
-                                    });
-                                    
-                                    if (result && result.status === 'success') {
-                                        // Verifikasi
-                                        const verifyResult = await callGoogleScript('GET', {
-                                            action: 'getQuestions',
-                                            id: q.id
-                                        });
-                                        
-                                        if (verifyResult && verifyResult.status === 'success' && 
-                                            verifyResult.data && verifyResult.data.length > 0) {
-                                            qVerified = true;
-                                            savedQuestions.push(q);
-                                        }
-                                    }
-                                } catch (e) {
-                                    console.warn(`Question ${i+1} attempt ${attempt} failed:`, e);
-                                }
-                                
-                                if (!qVerified && attempt < maxAttempts) {
-                                    await new Promise(resolve => setTimeout(resolve, baseDelay));
-                                }
-                            }
-                            
-                            if (!qVerified) {
-                                failedQuestions.push(q);
-                            }
-                            
-                            // Update progress
-                            button.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>Mengirim ke Google Sheets... (${savedQuestions.length + failedQuestions.length}/${questionsToSave.length})`;
-                        }
-                        
-                        // Simpan yang berhasil ke IndexedDB
-                        if (savedQuestions.length > 0) {
-                            await IndexedDBService.putBulk('questions', savedQuestions);
-                            const cached = CacheHelper.getCached('questions') || [];
-                            cached.push(...savedQuestions);
-                            AppState.cache.set('questions', { data: cached, timestamp: Date.now(), valid: true });
-                        }
-                        
-                        // Simpan yang gagal ke queue untuk retry
-                        if (failedQuestions.length > 0) {
-                            for (const fq of failedQuestions) {
-                                await IndexedDBService.put('questions', fq);
-                            }
-                        }
-                        
-                        AppState.cache.clear(); 
+                        button.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>Mengirim ke Google Sheets...`;
+
+                        const saveResult = await DataService.addQuestionsDirect(questionsToSave);
+
+                        AppState.cache.clear();
                         UI.hideGeminiModal();
-                        
-                        if (savedQuestions.length === questionsToSave.length) {
-                            // Semua berhasil
+
+                        if (saveResult && saveResult.success) {
                             UI.showNotification(`✅ ${questionsToSave.length} soal berhasil ditambahkan dan tersimpan di Google Sheets!`, 'success');
-                        } else if (savedQuestions.length > 0) {
-                            // Sebagian berhasil
-                            UI.showNotification(`${savedQuestions.length}/${questionsToSave.length} soal berhasil tersimpan. ${failedQuestions.length} soal disimpan lokal.`, 'warning');
                         } else {
-                            // Semua gagal
-                            UI.showNotification(`⚠️ Gagal mengirim ke Google Sheets. ${questionsToSave.length} soal disimpan lokal.`, 'error');
+                            UI.showNotification(`⚠️ ${saveResult?.message || `${questionsToSave.length} soal disimpan lokal.`}`, 'warning');
                         }
-                        
+
                         UI.loadAndRenderPaginatedQuestions();
                     } catch(error) {
                         console.error('Error saving generated questions:', error);
@@ -6802,39 +6773,48 @@
                     // Setelah dikirim, kita VERIFIKASI bahwa data benar-benar ada di Sheets
                     async function verifyResultsInGoogleSheets(results) {
                         if (!results || results.length === 0) return false;
-                        
-                        // Ambil salah satu resultId untuk verifikasi (cukup 1 per student)
-                        const sampleResultId = results[0].resultId;
-                        
+
+                        const sample = results[0];
+                        const sampleResultId = sample.resultId;
+
                         try {
                             // Query ke Google Sheets untuk cek apakah data ada
                             const verifyResult = await callGoogleScript('GET', {
                                 action: 'getResults',
                                 resultId: sampleResultId
                             });
-                            
-                            // Cek apakah data ditemukan
-                            if (verifyResult && verifyResult.status === 'success' && 
-                                verifyResult.data && verifyResult.data.length > 0) {
-                                console.log('✅ VERIFIKASI BERHASIL: Data ditemukan di Google Sheets');
-                                return true;
-                            } else {
-                                console.warn('⚠️ VERIFIKASI GAGAL: Data tidak ditemukan di Sheets');
+
+                            if (!(verifyResult && verifyResult.status === 'success' && Array.isArray(verifyResult.data))) {
+                                console.warn('⚠️ VERIFIKASI GAGAL: respons verifikasi tidak valid');
                                 return false;
                             }
+
+                            const found = verifyResult.data.some(item =>
+                                item.resultId === sampleResultId ||
+                                (item.namaLengkap === sample.namaLengkap && item.kodesoal === sample.kodesoal && String(item.noSoal) === String(sample.noSoal))
+                            );
+
+                            if (found) {
+                                console.log('✅ VERIFIKASI BERHASIL: Data ditemukan di Google Sheets');
+                                return true;
+                            }
+
+                            console.warn('⚠️ VERIFIKASI GAGAL: resultId sampel belum ditemukan di Sheets');
+                            return false;
                         } catch (error) {
                             console.error('❌ Error saat verifikasi:', error);
                             return false;
                         }
                     }
-                    
+
                     // ========== KIRIM WAJIB DENGAN VERIFIKASI ==========
                     // Loop sampai berhasil terkirim DAN terverifikasi
-                    
-                    const maxAttempts = 15; // Coba hingga 15 kali
-                    const baseDelay = 2000; // 2 detik
+
+                    const maxAttempts = 8;
+                    const baseDelay = 1500;
                     let attempt = 0;
                     let isVerified = false;
+                    let sendSucceeded = false;
                     let lastError = '';
                     
                     // Tampilkan modal "Mengirim..." dengan progress
@@ -6853,49 +6833,54 @@
                     
                     while (attempt < maxAttempts && !isVerified) {
                         attempt++;
-                        
+
                         // Update progress
                         const progressHtml = `
                             <div class="text-center">
                                 <i class="fas fa-spinner fa-spin fa-2x text-blue-500 mb-3"></i><br>
                                 <strong>Percobaan ke-${attempt} dari ${maxAttempts}</strong><br>
-                                <small class="text-gray-500">${lastError || 'Mengirim jawaban...'}</small>
+                                <small class="text-gray-500">${lastError || (sendSucceeded ? 'Memverifikasi data...' : 'Mengirim jawaban...')}</small>
                             </div>
                         `;
                         Swal.getHtmlContainer().innerHTML = progressHtml;
-                        
+
                         try {
-                            // KIRIM DATA KE GOOGLE SHEETS
-                            const result = await callGoogleScript('POST', {
-                                action: 'addResults',
-                                data: preparedResults
-                            });
-                            
-                            if (result && result.status === 'success') {
-                                console.log(`📤 Attempt ${attempt}: GAS Response SUCCESS`);
-                                
+                            if (!sendSucceeded) {
+                                // KIRIM DATA KE GOOGLE SHEETS (sekali, lalu retry verifikasi)
+                                const result = await callGoogleScript('POST', {
+                                    action: 'addResults',
+                                    data: preparedResults
+                                });
+
+                                if (result && result.status === 'success') {
+                                    console.log(`📤 Attempt ${attempt}: GAS Response SUCCESS`);
+                                    sendSucceeded = true;
+                                } else {
+                                    lastError = result?.message || 'Server response tidak valid';
+                                    console.warn(`⚠️ Attempt ${attempt} failed:`, lastError);
+                                }
+                            }
+
+                            if (sendSucceeded) {
                                 // VERIFIKASI: Cek apakah data benar-benar ada di Sheets
                                 isVerified = await verifyResultsInGoogleSheets(preparedResults);
-                                
+
                                 if (isVerified) {
                                     console.log('✅ Data terverifikasi ada di Google Sheets!');
-                                    break; // Keluar dari loop
-                                } else {
-                                    console.warn(`⚠️ Attempt ${attempt}: GAS success tapi VERIFIKASI GAGAL - Data belum ada di Sheets`);
-                                    lastError = 'Menunggu konfirmasi dari server...';
+                                    break;
                                 }
-                            } else {
-                                lastError = result?.message || 'Server response tidak valid';
-                                console.warn(`⚠️ Attempt ${attempt} failed:`, lastError);
+
+                                lastError = 'Menunggu konfirmasi dari server...';
                             }
                         } catch (error) {
                             lastError = error.message;
                             console.error(`❌ Attempt ${attempt} error:`, error);
                         }
-                        
-                        // Jika belum berhasil, tunggu dengan exponential backoff
+
+                        // Jika belum berhasil, tunggu dengan backoff + jitter
                         if (!isVerified && attempt < maxAttempts) {
-                            const delay = baseDelay * Math.min(attempt, 5); // max 10 detik
+                            const jitter = Math.floor(Math.random() * 600);
+                            const delay = (baseDelay * Math.min(attempt, 4)) + jitter;
                             await new Promise(resolve => setTimeout(resolve, delay));
                         }
                     }
@@ -6905,9 +6890,9 @@
                     const finalScore = AppState.questions.length > 0 ? Math.round(totalScore / AppState.questions.length) : 0;
                     const grade = finalScore >= 90 ? 'A' : finalScore >= 80 ? 'B' : finalScore >= 70 ? 'C' : finalScore >= 60 ? 'D' : 'E';
                     
-                    // Kirim grade juga (tanpa perlu verifikasi - ini tambahan)
+                    let gradeSyncResult = { success: true, localOnly: false, message: '' };
                     try {
-                        await DataService.addGrade({
+                        gradeSyncResult = await DataService.addGradeDirect({
                             gradeId: `${Date.now()}-${AppState.currentUser.username}-${AppState.selectedExamCode}`,
                             kelas: AppState.currentUser.kelas,
                             namaSiswa: AppState.currentUser.nama,
@@ -6922,9 +6907,17 @@
                         });
                     } catch (e) {
                         console.warn('Grade sync failed:', e);
+                        gradeSyncResult = { success: false, localOnly: true, message: e.message || 'Gagal sinkron nilai' };
                     }
-                    
+
                     if (isVerified) {
+                        const gradeWarningHtml = !gradeSyncResult?.success
+                            ? `<div class="bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-3 rounded mt-3">
+                                   <i class="fas fa-exclamation-triangle"></i>
+                                   <strong> Nilai akhir belum terkonfirmasi di Google Sheets.</strong><br>
+                                   <small>${gradeSyncResult?.message || 'Nilai tersimpan lokal dan akan dicoba sinkron otomatis.'}</small>
+                               </div>`
+                            : '';
                         // ✅ BERHASIL TERKIRIM DAN TERVERIFIKASI
                         Swal.fire({
                             title: '✅ Ujian Selesai!',
@@ -6935,6 +6928,7 @@
                                    </div>
                                    <h3 class="text-2xl font-bold">Nilai Anda: ${finalScore} (${grade})</h3>
                                    <p class="text-gray-600">${finalScore >= 70 ? '🎉 Selamat! Anda LULUS' : '💪 Tetap semangat! Anda TIDAK LULUS, jangan menyerah!'}</p>
+                                   ${gradeWarningHtml}
                                    <p class="text-sm text-gray-500 mt-4">Anda akan diarahkan ke halaman login...</p>`,
                             icon: 'success',
                             confirmButtonText: 'Keluar',
@@ -6949,15 +6943,15 @@
                         // Simpan ke IndexedDB untuk backup
                         await IndexedDBService.putBulk('results', preparedResults);
                         
-                        // Simpan ke queue untuk retry manual
+                        // Simpan ke queue untuk retry manual (kontrak queue standar)
                         const queueData = {
-                            id: `queue-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                            action: 'addResults',
+                            id: `op-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                            action: 'addBatch',
+                            storeName: 'results',
                             data: preparedResults,
                             timestamp: Date.now(),
                             status: 'pending',
-                            retryCount: 0,
-                            maxRetries: 20
+                            retryCount: 0
                         };
                         await IndexedDBService.put('syncQueue', queueData);
                         
